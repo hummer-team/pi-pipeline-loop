@@ -30,7 +30,13 @@ import { auditAutoDiagnostic } from "./diagnostics";
 
 export type HardStopVerdict =
   | { kind: "continue" }
-  | { kind: "hard"; stopReason: AutoJobStopReason };
+  /**
+   * 226 Phase 3 (review 8f): optional cause detail — the concrete freeze
+   * reason (`blockedReason`) behind `freeze_unresolvable`, so the DOC-level
+   * `failReason` can carry `freeze_unresolvable(<原因>)`. The JOB-level
+   * `stopReason` stays clean (`freeze_unresolvable`), no new stop reason.
+   */
+  | { kind: "hard"; stopReason: AutoJobStopReason; detail?: string };
 
 export type LoopBrakeVerdict =
   | { kind: "continue"; reason: "within_budget" }
@@ -94,7 +100,9 @@ export function evaluateHardStop(input: {
     blockedReason &&
     isUnresolvableFreeze({ meta, job, state, reason: blockedReason })
   ) {
-    return { kind: "hard", stopReason: "freeze_unresolvable" };
+    // 226 Phase 3: preserve the SOURCE cause on the verdict — the doc-level
+    // failReason needs `freeze_unresolvable(<blockedReason>)`.
+    return { kind: "hard", stopReason: "freeze_unresolvable", detail: blockedReason };
   }
   // 0 / unset = unlimited (same convention as wallClockMs).
   if (stop.maxTotalFreezes > 0 && state.counters.totalFreezes >= stop.maxTotalFreezes) {

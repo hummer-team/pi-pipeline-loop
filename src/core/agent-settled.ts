@@ -358,7 +358,7 @@ export function createAgentSettled(
             // message loses the prefix (bare "docs/x.md 2 答"). Only relax when
             // requirementDoc is bound and the message starts with that exact path —
             // precise prefix matching keeps pure chat from false-hitting.
-            if (!isBarePipelineTurn(lastUserMsg, meta.requirementDoc)) {
+            if (!isBarePipelineTurn(lastUserMsg, meta.requirementDoc, !!meta.autoJob)) {
               // 211 Phase 0: owner-side re-presentation of a gate suppressed in
               // a child session. Runs BEFORE the non-pipeline audit so a
               // presented gate is never mislabelled as ordinary chat (mutually
@@ -1226,12 +1226,28 @@ export function createAgentSettled(
  * @param message - The last user message text
  * @param requirementDoc - The bound requirement document path (if any)
  */
-function isBarePipelineTurn(message: string, requirementDoc: string | undefined): boolean {
+/**
+ * @param message - The last user message text
+ * @param requirementDoc - The bound requirement document path (if any)
+ * @param relaxTail - 226 Phase 3: TRUE for AUTO jobs only (`!!meta.autoJob`).
+ *   The plugin appends an instruction + `Pipeline: <id>` suffix after its own
+ *   dispatch args, so a trailing suffix must not demote its own turn to
+ *   ordinary chat. The STRICT branch stays byte-identical for humans.
+ */
+function isBarePipelineTurn(
+  message: string,
+  requirementDoc: string | undefined,
+  relaxTail: boolean,
+): boolean {
   if (!requirementDoc) return false;
-  const pattern = new RegExp(
-    `^${escapeRegExp(requirementDoc)}\\s*(\\d+\\s*答|full-und\\?|\\d+$)`,
-  );
-  return pattern.test(message);
+  const doc = escapeRegExp(requirementDoc);
+  // strict: the historical source, byte-identical (human behaviour must not move).
+  if (!relaxTail) {
+    return new RegExp(`^${doc}\\s*(\\d+\\s*答|full-und\\?|\\d+$)`).test(message);
+  }
+  // relaxed (auto only): the self-dispatched prompt carries a trailing
+  // instruction + `Pipeline: <id>` marker after the args.
+  return new RegExp(`^${doc}\\s*(\\d+\\s*答|full-und\\?|\\d+)(?=\\s|$)`).test(message);
 }
 
 /**

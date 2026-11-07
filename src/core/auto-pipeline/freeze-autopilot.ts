@@ -193,10 +193,13 @@ export async function runFreezeAutopilot(
   // transaction owns the receipt + release + stop (Phase 5 §6.2 ②).
   // Dynamic import breaks the load-time cycle flow-state → freeze-autopilot →
   // finalize → cleanup → flow-state.
+  // 226 Phase 3 (review 8f/8g): the DOC-level failReason carries the SOURCE
+  // cause (`freeze_unresolvable(<reason>)`); the JOB-level stopReason stays
+  // the clean `freeze_unresolvable` label (no new stop reason invented).
   const { handleDocFailure } = await import("./finalize");
   await handleDocFailure(ctx as never, config, state, job, {
     outcome: "failed",
-    reason: "freeze_unresolvable",
+    reason: `freeze_unresolvable(${reason})`,
     verdict: { kind: "hard", stopReason: "freeze_unresolvable" },
   });
   await safeWriteAuditLog("pipeline_auto_stop", {

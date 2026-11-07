@@ -2010,6 +2010,7 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 - 只读：插件**永不**回写 job 文件；进度状态写入 `.pi/auto_pipeline/{jobId}/state.json`（sidecar）。`.pi/auto_pipeline/` 与 `.pi/audit/` 同级，属于运行期产物，**不随任务归档**。
 - `jobId` = 文件名去掉 `.yaml`/`.yml`（**含 `_loop` 后缀**，如 `demo_loop.yaml` → `demo_loop`），只允许 `[A-Za-z0-9._-]`；含路径分隔符/`..` 一律拒绝。`--job` 收 `<name>_loop`，并容忍尾部 `.yaml`/`.yml`（`--job demo_loop`、`--job demo_loop.yaml`、`--job demo_loop.yml` 等价）；`.YAML`/`.YML` 大写不支持。
 - 缺省值在解析期填满（下游永远看不到 `undefined`）：`tier: assisted`、`clarify.maxRounds: 5`、`clarify.onExhausted: stop`、`verify.maxAttempts: 3`、`writePolicy.gitModify: block`、`defaults.startStage: clarify`、`finalLoopGrace: 1`（上限 3，`0` 关闭）、`maxTotalLoops: 20`、`designReview.maxRounds: 3`、`reviewFix.maxRounds: 6`、`reviewFix.maxLoopsPerStage: 6`、`maxAutoResumes: 2`、`wallClockMs: 0`、`maxTotalFreezes: 0`（不限制）。
+- **`clarify.maxRounds` 口径（226）**：`maxRounds` 是**真实派发次数**预算 —— 每次成功的 clarify 执行者派发 +1（startup 轮与 settle 轮同租），派发失败**回滚**不计数（`clarify_round_refund`）；消耗上限后按 `clarify.onExhausted` 分流。clarify 的失败重试会经 `freezePolicy`（默认 `resume`）**重复占用 `totalFreezes`**：若把 `maxTotalFreezes` 设得很小，clarify 重派可能先耗光冻结预算；建议 `maxTotalFreezes: 0`（不限）或 ≥ `clarifyStalls`（+1）；`maxAutoResumes` 对 clarify 重试偏紧（默认 2），建议 ≥ 3。
 - fail-fast（**不接受**静默降级）：`tier` 只允许 `rule` / `assisted`；`clarify.strategy` 只允许 `self-answer`；`clarify.onExhausted` 只允许 `stop` / `self-confirm`；`designReview.mode` 只允许 `auto`（`manual` 报错）；`designReview.onFail` 只允许 `auto-revise` / `stop`；`writePolicy.gitModify` 只允许 `allow` / `block`；`defaults.startStage` 只允许可恢复阶段或 `auto`；`freezePolicy.byReason` 的值只能是 `resume` / `abort` / `stop-and-report`。未知键只告警。
 - **已移除的键（写入即报错，绝不静默降级）**：`clarify.mode`、`clarify.fallback`、`clarify.answerStrategy`、`designReview.failAction`（改名 `onFail`）、`decisionPolicy`（改名 `freezePolicy`）、`audit.recordAutoDecisions`（改名 `autoDecisions`）、`stopConditions.maxConsecutiveVerifyFailures`（改用 `verify.maxAttempts`）。
 - 继承口径：`verify.maxAttempts` 与 `writePolicy.gitModify` 在 job **未配置**时不 overlay（沿用 `pipeline_loop.json`）；其余键均为 job 必填默认。
@@ -2051,6 +2052,7 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 | `reviewFix.maxRounds` | job | `maxLoopCycles`（overlay） | 既有 `recordStageVisit` 冻结语义（`max_loop_cycles`） |
 | `designReview.maxRounds` | job | `meta.autoJob.designReviewRounds` | 只在**派发前**（`review_ready` / FAIL 后重派）冻结；第 N 轮 PASS 照常推进到 develop，第 N+1 次派发才冻结（`design_review_budget_exhausted`） |
 | `stopConditions.maxTotalLoops` | job | sidecar `counters.totalLoops`（settle 时按 `loopCycleCount` 增量派生） | 只在「发起新 develop/fix 循环」处软停（`budget_exhausted`），当前文档仍可拿到 `finalLoopGrace` 次完成机会 |
+| `clarify.maxRounds` | job | sidecar 每文档 `clarifyRounds`（每次**成功派发** +1，失败回滚并审计 `clarify_round_refund`） | 达限按 `clarify.onExhausted` 分流：`stop` → 冻结（`clarify_budget_exhausted`），`self-confirm` → 强制一次 `full-und?` 收尾轮 |
 
 > 预算互不影响：`designReviewRounds` 达限不会冻结循环预算，`totalLoops` 达限也不会冻结 design-review 轮次。结果消费路径（`review_running` / `update_ready` / `update_running`）**永不**因轮次预算冻结。
 
@@ -2079,7 +2081,7 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 
 | 闸门 | 自动应答 |
 |---|---|
-| clarify 完成标记 | job 指令只要求自答并写 `答：`（不写 marker）；完成标记只由派发 `full-und?` 的那一轮写入；未产出按 `clarify.onExhausted` 分流：`stop`（默认）→ 文档失败 `clarify_marker_missing`，`self-confirm` → 记 `clarifyFallbackUsed` 并经统一派发通道（`dispatchClarifyRound`）强制再派一次 `full-und?`，派发失败或再次未产出 → `clarify_marker_missing` |
+| clarify 完成标记 | job 指令只要求自答并写 `答：`（不写 marker）；完成标记只由派发 `full-und?` 的那一轮写入。收尾事实（226）：`full-und?` **成功派发后**落盘 `clarifyFinalisationRound` —— 下一次 settle 走 `await-finalisation`，**不再派发**，把 settle 交还给 marker 门禁。未产出按 `clarify.onExhausted` 分流：`stop`（默认）→ 文档失败 `clarify_marker_missing`，`self-confirm` → 记 `clarifyFallbackUsed` 并经统一派发通道（`dispatchClarifyRound`）强制再派一次 `full-und?`（派发失败先复位该标记再走 `clarify_dispatch_failed` 失败路由），再次未产出 → `clarify_marker_missing` |
 | plan/review confirm | 由 overlay 写 `confirm.mode: auto`，既有 confirm 守卫（先读 config 再决定是否弹窗）因此不再弹窗 |
 | design-review 入口授权 | 第 4 参 `{ autoPipeline: { jobId } }`：保留 child 拒绝与前置校验，跳过 TUI 检测与确认，审计 `authorised_auto` |
 | manual FAIL | v1 只允许 `designReview.mode: auto`，FAIL 走 `auto-revise`（不伪造人工裁决） |
@@ -2121,10 +2123,12 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 | `designReview.mode` | `confirm.mode`（`stages.design-review.confirm.mode`） | `onFail` | FAIL 时的行为 |
 |---|---|---|---|
 | `auto`（v1 唯一取值） | `auto`（模板默认） | `auto-revise`（默认） | 授权自动修订 plan 后重评（既有 auto 语义） |
-| `auto` | `auto` | `stop` | 文档失败并终止（`budget_exhausted`） |
+| `auto` | `auto` | `stop` | 文档失败并终止（`doc_failed`；job 摘要带 `[failReason: …]` 真实原因） |
 | `manual` | — | — | v1 **拒绝**（解析期报错），人工 FAIL 菜单只存在于 `/pipeline-start` 人机流程 |
 
 > 219 的键名 `failAction` 已改名 `onFail`；旧键写入即解析报错。
+
+> **226 终态标签口径**：`onFailure: stop` 的文档失败终止 job 时 `stopReason=doc_failed`（不再误用 `budget_exhausted`；loop brake 的软停仍是 `budget_exhausted`）；冻结终态的 job 级 `stopReason` 保持 `freeze_unresolvable`，**文档级** `failReason` 携带来源（两个硬停入口一致）：settle seam `freeze_unresolvable(<blockedReason>)`，freeze autopilot `freeze_unresolvable(<reason>)`。
 
 ### 19.11 任务连续性（`/pipeline-auto` 之外同样生效）
 

@@ -97,9 +97,12 @@ describe("stop-policy — evaluateHardStop", () => {
       j.freezePolicy.onFreeze = "stop-and-report";
     });
     const both = state({ counters: { ...state().counters, totalFreezes: 5 } });
+    // 226 Phase 3: the verdict carries `detail: blockedReason` (source cause),
+    // while the job-level stopReason stays `freeze_unresolvable`.
     expect(evaluateHardStop({ state: both, meta, job: stopped, now: NOW })).toEqual({
       kind: "hard",
       stopReason: "freeze_unresolvable",
+      detail: "mystery_freeze",
     });
   });
 
@@ -213,6 +216,7 @@ describe("stop-policy — H3: the two functions never blur", () => {
     expect(evaluateHardStop({ state: state(), meta, job: stopped, now: NOW })).toEqual({
       kind: "hard",
       stopReason: "freeze_unresolvable",
+      detail: "stuck",
     });
   });
 });

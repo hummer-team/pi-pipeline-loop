@@ -489,8 +489,10 @@ export async function handleDocFailure(
 
   // ③ onFailure: stop
   if (job.docs.onFailure !== "continue") {
+    // 226 Phase 3: the honest label — this is a DOC failure with `stop`, not a
+    // loop budget; the real cause stays on the doc receipt (`failReason`).
     return finalizeJob(ctx, config, {
-      stopReason: verdictStopReason(opts.verdict) ?? "budget_exhausted",
+      stopReason: verdictStopReason(opts.verdict) ?? "doc_failed",
     });
   }
 
@@ -716,9 +718,14 @@ export function buildJobSummary(state: AutoJobState): string {
   const pending = state.docs.filter((d) => d.status === "pending" || d.status === "running").length;
   const status = state.status === "running" ? "stopped" : state.status;
   const reason = state.stopReason ? ` (${state.stopReason})` : "";
+  // 226 Phase 3: surface the REAL cause of the stopped document — the job
+  // label says WHAT stopped, the doc receipt says WHY (may differ, e.g. a
+  // `dispatch_failed` job stalling on a `clarify_dispatch_failed` doc).
+  const failedDoc = state.docs.find((d) => d.failReason !== undefined && (d.status === "failed" || d.status === "skipped"));
+  const detail = failedDoc?.failReason ? ` [failReason: ${failedDoc.failReason}]` : "";
   return (
     `Auto job "${state.jobId}" ${status}${reason}: ` +
     `${completed} completed, ${skipped} skipped, ${failed} failed, ${pending} pending ` +
-    `of ${state.jobTotalDocs}.`
+    `of ${state.jobTotalDocs}.${detail}`
   );
 }

@@ -234,6 +234,9 @@ describe("freeze-autopilot — runFreezeAutopilot", () => {
     const persisted = readJobState(ROOT, JOB_ID)!;
     expect(persisted.status).toBe("failed");
     expect(persisted.stopReason).toBe("freeze_unresolvable");
+    // 226 Phase 3 (review 8f/8g): the DOC-level failReason carries the SOURCE
+    // cause while the job-level label stays clean.
+    expect(persisted.docs[0]?.failReason).toBe("freeze_unresolvable(verify_budget)");
     expect(persisted.counters.totalFreezes).toBe(1);
     expect(audits).toContain("pipeline_auto_stop");
     expect(notified.length).toBeGreaterThan(0);

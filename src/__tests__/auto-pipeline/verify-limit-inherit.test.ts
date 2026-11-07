@@ -15,6 +15,8 @@
  * - the settle seam passes it, so `handleAutoSettle` inherits the JSON value.
  */
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { makeTestMeta } from "../helpers";
 import { createJobState, type AutoJobState } from "../../core/auto-pipeline/job-state";
 import { parseAutoJob, type AutoJobConfig } from "../../core/auto-pipeline/job-schema";
@@ -26,7 +28,7 @@ import { handleAutoSettle } from "../../core/auto-pipeline/settle-seam";
 import { __resetAutoJobLockForTests } from "../../core/auto-pipeline/config-overlay";
 import { __resetFinalizeStateForTests } from "../../core/auto-pipeline/finalize";
 import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
-import { createAutoHarness, createSessionStub, HARNESS_DOCS, type AutoHarness } from "./auto-harness";
+import { createAutoHarness, createSessionStub, deployHarnessAgents, HARNESS_DOCS, HARNESS_JOB_YAML, type AutoHarness } from "./auto-harness";
 
 /** The harness job deliberately configures NO `verify` block (inherit case). */
 const JOB_YAML = [
@@ -93,6 +95,9 @@ describe("handleAutoSettle — the seam passes the effective cap", () => {
 
   beforeEach(async () => {
     harness = createAutoHarness();
+    // 226 Phase 2: the startup clarify round will be dispatched by these
+    // settle tests — the configured executor must resolve its agent file.
+    deployHarnessAgents(harness);
     await harness.install();
     __resetFinalizeStateForTests();
     __setSafeWriteAuditLogOverride(async () => {});
@@ -124,5 +129,29 @@ describe("handleAutoSettle — the seam passes the effective cap", () => {
     const atFive = makeTestMeta({ currentStage: "develop", verifyAttempts: 5 });
     expect(await handleAutoSettle(ctx() as never, harness.config, atFive)).toBe(true);
     expect(harness.state().docs[0]?.failReason).toBe("verify_failures");
+  });
+
+  it("226 Phase 3: a hard stop keeps the cause on the doc — freeze_unresolvable(<blockedReason>)", async () => {
+    // Make the freeze unresolvable for this reason under the job policy.
+    const jobPath = path.join(harness.root, "docs", "jobs", "alpha_loop.yaml");
+    fs.writeFileSync(
+      jobPath,
+      HARNESS_JOB_YAML.replace("  onFreeze: resume", "  onFreeze: stop-and-report"),
+      "utf8",
+    );
+
+    const blocked = makeTestMeta({
+      currentStage: "develop",
+      flowState: "blocked",
+      blockedReason: "wall_clock_hit",
+    });
+    expect(await handleAutoSettle(ctx() as never, harness.config, blocked)).toBe(true);
+
+    const state = harness.state();
+    // The DOC-level receipt carries the SOURCE cause; the JOB-level label stays
+    // `freeze_unresolvable` (no new stop reason — review B-#8g).
+    expect(state.docs[0]?.failReason).toBe("freeze_unresolvable(wall_clock_hit)");
+    expect(state.stopReason).toBe("freeze_unresolvable");
+    expect(state.status).toBe("failed");
   });
 });

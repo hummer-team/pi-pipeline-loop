@@ -107,7 +107,9 @@ export async function handleAutoSettle(
   if (hard.kind === "hard") {
     await handleDocFailure(ctx, config, state, job, {
       outcome: "failed",
-      reason: hard.stopReason,
+      // 226 Phase 3 (review 8f): the settle-seam hard stop keeps the SOURCE
+      // cause — `freeze_unresolvable(<reason>)` when the verdict carries it.
+      reason: hard.detail ? `${hard.stopReason}(${hard.detail})` : hard.stopReason,
       verdict: hard,
     });
     return true;

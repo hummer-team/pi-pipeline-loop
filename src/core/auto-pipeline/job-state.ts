@@ -175,7 +175,10 @@ export type AutoJobStopReason =
   | "clarify_stalled"
   | "clarify_requirement_unclear"
   | "clarify_budget_exhausted"
-  | "awaiting_human_in_auto";
+  | "awaiting_human_in_auto"
+  // 226 Phase 3: a soft `onFailure: stop` doc failure — the honest label
+  // (the old misuse of `budget_exhausted` was only one possibility).
+  | "doc_failed";
 
 /**
  * job state path: `<projectRoot>/.pi/auto_pipeline/{jobId}/state.json`.

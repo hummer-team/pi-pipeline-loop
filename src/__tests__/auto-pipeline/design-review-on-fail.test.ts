@@ -6,7 +6,7 @@
  * read it, so a job that asked "FAIL stops this document" kept revising until
  * some other budget happened to trip. These tests pin the two behaviours:
  * - `stop` → the coordinator hands the doc to the Phase 5 transaction
- *   (`handleDocFailure`, stop reason `budget_exhausted`);
+ *   (`handleDocFailure`, stop reason `doc_failed` — 226 Phase 3 relabel);
  * - `auto-revise` (and human mode) → the existing revise-plan route is intact.
  */
 import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
@@ -186,7 +186,9 @@ describe("design-review onFail (G4)", () => {
     expect(state.docs[0]?.failReason).toBe("design_review_on_fail_stop");
     // onFailure defaults to "stop" → the job is terminal, never left running.
     expect(state.status).toBe("failed");
-    expect(state.stopReason).toBe("budget_exhausted");
+    // 226 Phase 3: the honest label for a soft `onFailure: stop` doc failure
+    // (the doc receipt above carries the real cause `design_review_on_fail_stop`).
+    expect(state.stopReason).toBe("doc_failed");
     // No update operation was created (the release invalidates the loop, so the
     // operation may be cleared; it must never be a revise dispatch).
     expect(ctx.session.getMeta()!.designReview?.operation?.kind ?? "none").not.toBe("update");

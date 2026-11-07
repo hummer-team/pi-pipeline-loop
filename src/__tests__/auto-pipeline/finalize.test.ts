@@ -16,6 +16,7 @@ import {
   buildJobSummary,
   finalizeCurrentDoc,
   finalizeJob,
+  handleDocFailure,
   syncAutoCountersFromMeta,
   __resetFinalizeStateForTests,
 } from "../../core/auto-pipeline/finalize";
@@ -205,6 +206,61 @@ describe("finalize — buildJobSummary", () => {
     expect(summary).toContain("1 failed");
     expect(summary).toContain("1 pending");
     expect(summary).toContain("budget_exhausted");
+    // No failed-doc receipt → no failReason detail appended.
+    expect(summary).not.toContain("failReason");
+  });
+
+  it("226 Phase 3: the summary carries the stopped document's REAL cause", () => {
+    const fake = {
+      schemaVersion: 1 as const,
+      jobId: "alpha_loop",
+      jobPath: "docs/jobs/alpha_loop.yaml",
+      jobHash: "h",
+      jobTotalDocs: 2,
+      docIndex: 0,
+      status: "failed" as const,
+      startedAt: 0,
+      updatedAt: 0,
+      counters: { totalLoops: 0, totalFreezes: 0, consecutiveVerifyFailures: 0, autoResumes: 0, finalGraceUsed: {} },
+      docs: [
+        { doc: HARNESS_DOCS[0]!, status: "failed" as const, updatedAt: 0, failReason: "clarify_dispatch_failed" },
+        { doc: HARNESS_DOCS[1]!, status: "pending" as const, updatedAt: 0 },
+      ],
+      stopReason: "doc_failed" as const,
+    };
+    const summary = buildJobSummary(fake);
+    expect(summary).toContain("(doc_failed)");
+    expect(summary).toContain("[failReason: clarify_dispatch_failed]");
+  });
+});
+
+describe("finalize — doc_failed stop label (226 Phase 3)", () => {
+  it("soft doc failure + onFailure: stop → stopReason doc_failed (never the borrowed budget_exhausted)", async () => {
+    await harness.install();
+    const stub = createSessionStub(makeTestMeta({ currentStage: "develop" }));
+
+    await handleDocFailure(stub, harness.config, harness.state()!, harness.job, {
+      outcome: "failed",
+      reason: "clarify_dispatch_failed",
+    });
+
+    const state = harness.state()!;
+    expect(state.docs[0]?.failReason).toBe("clarify_dispatch_failed");
+    expect(state.status).toBe("failed");
+    expect(state.stopReason).toBe("doc_failed");
+  });
+
+  it("a HARD verdict keeps its own stop reason (the recheck/loop brake labels do not change)", async () => {
+    await harness.install();
+    const stub = createSessionStub(makeTestMeta({ currentStage: "develop" }));
+
+    await handleDocFailure(stub, harness.config, harness.state()!, harness.job, {
+      outcome: "failed",
+      verdict: { kind: "hard", stopReason: "wall_clock" },
+      reason: "wall_clock",
+    });
+
+    expect(harness.state()!.stopReason).toBe("wall_clock");
   });
 });
 
