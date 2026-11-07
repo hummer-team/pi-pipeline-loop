@@ -71,6 +71,38 @@ async function getWritePolicyModule(): Promise<typeof import("../core/design-rev
   return _writePolicyModule;
 }
 
+// 226 review round 2 (issue 2): same lazy-import discipline for the deferred
+// clarify round's delivery fact. `utils` must not import `../core` at load time
+// (static guard), but the dequeue is the ONLY place that knows a queued clarify
+// round really went out — so the promotion is loaded on demand.
+let _clarifyQueueFactModule: Promise<typeof import("../core/auto-pipeline/clarify-queue-fact")> | null = null;
+
+async function getClarifyQueueFactModule(): Promise<typeof import("../core/auto-pipeline/clarify-queue-fact")> {
+  if (!_clarifyQueueFactModule) {
+    _clarifyQueueFactModule = import("../core/auto-pipeline/clarify-queue-fact");
+  }
+  return _clarifyQueueFactModule;
+}
+
+/**
+ * Promote a queued finalisation round after a REAL dequeue spawn.
+ *
+ * Best effort: the round already went out, so a bookkeeping failure is audited
+ * (`warn`) and never unwinds the spawn.
+ */
+async function noteQueuedClarifyDelivered(config: PipelineConfig, meta: SessionMeta): Promise<void> {
+  try {
+    const { promoteClarifyQueuedFinalisation } = await getClarifyQueueFactModule();
+    await promoteClarifyQueuedFinalisation(config, meta.requirementDoc ?? null);
+  } catch (err) {
+    await safeWriteAuditLog("clarify_queue_fact_failed", {
+      pipelineId: meta.pipelineId,
+      stage: "clarify",
+      error: String(err),
+    }, "warn");
+  }
+}
+
 /**
  * Phase 2 / 177 (D4⑥): Extracts the current session file from a runtime context
  * for audit correlation. Mirrors the 171 precedent (`tool_rejected_frozen`).
@@ -1451,6 +1483,10 @@ export async function consumePendingSpawns(
           ui: opts.ui,
           session: opts.session,
           runtimeCtx: opts.runtimeCtx,
+          // 226 review round 2 (issue 2): the queue entry's OWN args must ride
+          // the dispatch — otherwise a deferred round loses `full-und?`/`<n> 答`
+          // and its finalisation instruction (the retry would ask nothing).
+          ...(freshEntry.extraArgs !== undefined ? { extraArgs: freshEntry.extraArgs } : {}),
         })
       : await spawnStageSubagent(pi, config, stage, fresh, {
           ui: opts.ui,
@@ -1803,7 +1839,19 @@ export async function spawnClarifyStageSubagent(
   pi: unknown,
   config: PipelineConfig,
   meta: SessionMeta,
-  opts?: { ui?: { notify: (msg: string) => void }; session?: SpawnSession; runtimeCtx?: unknown },
+  opts?: {
+    ui?: { notify: (msg: string) => void };
+    session?: SpawnSession;
+    runtimeCtx?: unknown;
+    /**
+     * 226 review round 2 (issue 2): the args the QUEUED dispatch carried
+     * (`pendingSpawns[stage].extraArgs`). The owner-side dequeue must deliver
+     * exactly those — `meta.lastClarifyTurnArgs` is only written by the human
+     * mention path, so falling back to it silently dropped the auto round's
+     * `full-und?`/`<n> 答` and its protocol/finalisation directive.
+     */
+    extraArgs?: string;
+  },
 ): Promise<{ spawned: boolean; fallback: boolean; deferred?: boolean }> {
   const agentName = resolveAgentMention(config, "clarify");
   if (!agentName) {
@@ -1825,8 +1873,19 @@ export async function spawnClarifyStageSubagent(
 
   const file = meta.requirementDoc ?? "";
   const sessionFile = extractSessionFile(opts?.runtimeCtx);
-  const { description } = resolveClarifyDescription(file, meta.lastClarifyTurnArgs);
-  const argsSuffix = meta.lastClarifyTurnArgs?.trim() ? ` ${meta.lastClarifyTurnArgs.trim()}` : "";
+  // 226 review round 2 (issue 2): a dequeued round arrives with its own args.
+  // They are the contract of the queue entry (`enqueuePendingSpawn` carries
+  // `extraArgs`), so they WIN over the human mention field — the deferred round
+  // must arrive with `full-und?`/`<n> 答` and the finalisation instruction.
+  const roundArgs = opts?.extraArgs ?? meta.lastClarifyTurnArgs;
+  // The queued args also carry the protocol/finalisation DIRECTIVE (prose after
+  // a blank line). Only the args line belongs in the title, exactly like the
+  // direct dispatch path (`resolveClarifyDescription(doc, decision.extraArgs)`).
+  const descriptionArgs = opts?.extraArgs !== undefined
+    ? opts.extraArgs.split("\n")[0]
+    : meta.lastClarifyTurnArgs;
+  const { description } = resolveClarifyDescription(file, descriptionArgs);
+  const argsSuffix = roundArgs?.trim() ? ` ${roundArgs.trim()}` : "";
   // 204 Phase 0: marker shared by the RPC path and the `[plugin auto-handoff]` fallback.
   const prompt = appendPipelineIdMarker(`${file}${argsSuffix}`.trim(), meta.pipelineId);
 
@@ -1861,6 +1920,9 @@ export async function spawnClarifyStageSubagent(
       }, { timeoutMs: LIFECYCLE_LISTENER_TIMEOUT_MS });
       // 210 Phase 2: clarify dispatch success is stage progress too.
       reportStageProgress(meta.pipelineId, "spawn");
+      // 226 review round 2 (issue 2): the queued finalisation round is REALLY
+      // out — promote the queue intent into the dispatched fact.
+      await noteQueuedClarifyDelivered(config, meta);
       return { spawned: true, fallback: false };
     }
     await safeWriteAuditLog("stage_spawn_rpc_failed", {
@@ -1885,6 +1947,9 @@ export async function spawnClarifyStageSubagent(
       });
       // 210 Phase 2: clarify followUp dispatch renews the idle clock.
       reportStageProgress(meta.pipelineId, "spawn");
+      // 226 review round 2 (issue 2): the fallback channel really delivered the
+      // queued round as well — same promotion as the RPC path.
+      await noteQueuedClarifyDelivered(config, meta);
       return { spawned: true, fallback: true };
     } catch {
       // sendUserMessage failure is non-fatal; fall through to notify

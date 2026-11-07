@@ -112,6 +112,12 @@ export async function dispatchClarifyRound(
   const composed = composeExtraArgs(decision, docText, job.tier, docState.anchors, extraArgsOverride);
   const baseArgs = composed.extraArgs;
   const extraArgs = finalisationInstruction ? `${baseArgs}\n\n${finalisationInstruction}` : baseArgs;
+  // 226 review round 2 (issue 2): the finalisation round is identified by its
+  // INSTRUCTION (the only call sites that pass it are the two forced-`full-und?`
+  // paths) OR by the decision action of the ordinary settle path. Both write the
+  // SAME sidecar fact, so the two entry points cannot drift.
+  const isFinalisationRound =
+    decision.action === "spawn-full-und" || finalisationInstruction !== undefined;
   if (composed.protocolApplied) {
     await auditAutoDecision(config, {
       gate: "clarify_protocol",
@@ -163,14 +169,17 @@ export async function dispatchClarifyRound(
 
   if (spawned.deferred) {
     // 226 review #2: a live same-agent twin postponed the spawn; the owner
-    // consumes `pendingSpawns` on its next settle and dispatches the SAME round.
+    // consumes `pendingSpawns` on its next settle and dispatches the SAME round
+    // — the queue entry carries this dispatch's `extraArgs` (round args +
+    // protocol/finalisation directive), so the deferred turn really delivers.
     // The reservation is therefore COMMITTED, never refunded: charging the round
     // exactly once here keeps `maxRounds` a real dispatch budget (the dequeue
     // side never charges again) and keeps the guide's "deferred only emits
-    // `clarify_dispatch_deferred`" contract true. The finalisation fact is bound
-    // to this committed round too, so the next settle defers to the marker gate
-    // instead of dispatching `full-und?` a second time.
-    if (decision.action === "spawn-full-und") progress.clarifyFinalisationRound = decision.round;
+    // `clarify_dispatch_deferred`" contract true. The marker debt is NOT booked
+    // as dispatched yet (226 review round 2 issue 2): only the QUEUE intent is
+    // recorded, and the dequeue promotes it once the spawn really happened — a
+    // dropped entry must not leave a debt nobody can pay.
+    if (isFinalisationRound) progress.clarifyFinalisationQueuedRound = decision.round;
     progress.updatedAt = Date.now();
     state.updatedAt = progress.updatedAt;
     await persistClarifyState(config, state);
@@ -205,7 +214,12 @@ export async function dispatchClarifyRound(
   progress.clarifyStallSignature = observation.signature;
   progress.clarifyStallDocLength = observation.docLength;
   // 226 Phase 1: the finalisation fact is bound to a REAL dispatch only.
-  if (decision.action === "spawn-full-und") progress.clarifyFinalisationRound = decision.round;
+  // 226 review round 2 (issue 2): a previously queued round is promoted here too
+  // (the recovery path re-dispatches it through this same function).
+  if (isFinalisationRound) {
+    progress.clarifyFinalisationRound = decision.round;
+    progress.clarifyFinalisationQueuedRound = undefined;
+  }
 
   // Streak: consecutive rounds still needing clarification AND not growing.
   const nextStreak = docState.assessmentVerdict === "needs-clarify" && !docState.grew

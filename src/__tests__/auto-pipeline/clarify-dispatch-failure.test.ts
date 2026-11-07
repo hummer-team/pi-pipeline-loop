@@ -24,6 +24,7 @@ import {
 import { noteClarifyStartupChannelFailure } from "../../core/auto-pipeline/clarify-dispatch-failure";
 import { __resetAutoJobLockForTests } from "../../core/auto-pipeline/config-overlay";
 import { __resetFinalizeStateForTests } from "../../core/auto-pipeline/finalize";
+import { consumePendingSpawns, enqueuePendingSpawn } from "../../utils/subagent-rpc";
 import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
 import { createAutoHarness, createSessionStub, deployHarnessAgents, HARNESS_DOCS, HARNESS_JOB_YAML, type AutoHarness } from "./auto-harness";
 
@@ -189,19 +190,65 @@ describe("noteClarifyDispatchFailure — the deferred twin is not a failure", ()
     expect(audits.some((line) => line.includes("clarify_round_refund"))).toBe(false);
   });
 
-  it("deferred finalisation round commits the marker debt (no repeated full-und? dispatch)", async () => {
+  it("deferred finalisation records only the QUEUE intent (delivery promotes it)", async () => {
     writeDoc(READY_ANSWERED_DOC);
     const meta = makeMeta();
     const { ctx } = makeCtx(meta);
 
     expect(await runAutoClarifyRound(ctx, harness.config, meta, failingDeps({ deferred: true }))).toBe("consumed");
 
-    // The queued round IS the finalisation round: the fact is written now so the
-    // next settle defers to the marker gate instead of re-dispatching.
+    // 226 review round 2 (issue 2): nothing was sent yet, so the DISPATCHED fact
+    // must stay unset — the dequeue promotes the queued round once it really
+    // goes out. The decision layer treats the queued round as owned (no second
+    // `full-und?`), and a dropped queue entry leaves no marker debt.
     const doc = harness.state().docs[0]!;
     expect(doc.clarifyRounds).toBe(1);
-    expect(doc.clarifyFinalisationRound).toBe(1);
+    expect(doc.clarifyFinalisationQueuedRound).toBe(1);
+    expect(doc.clarifyFinalisationRound).toBeUndefined();
     expect(freezeReasons).toEqual([]);
+  });
+
+  it("deferred → dequeue delivers the SAME round args and promotes the fact", async () => {
+    writeDoc(READY_ANSWERED_DOC);
+    // A real visit has `stageStartTime`: the deferred dispatch clears the
+    // same-visit spawn guard, and the queue consume must not read that as
+    // "already spawned for this visit".
+    const meta = { ...makeMeta(), stageStartTime: Date.now() } as SessionMeta;
+    const { ctx, stub } = makeCtx(meta);
+
+    // The deferral charged the round and recorded ONLY the queue intent.
+    expect(await runAutoClarifyRound(ctx, harness.config, meta, failingDeps({ deferred: true }))).toBe("consumed");
+    expect(harness.state().docs[0]!.clarifyFinalisationQueuedRound).toBe(1);
+
+    // The queued entry carries the round args + finalisation instruction (the
+    // exact contract `dispatchClarifyRound` passed to the deferred spawn).
+    enqueuePendingSpawn(
+      stub.session as never,
+      "clarify",
+      "feat-design-plan-agent",
+      " full-und?\n\n[auto-pipeline] Finalise the clarification.",
+    );
+
+    const sent: string[] = [];
+    const pi = { sendUserMessage: (message: string): void => { sent.push(message); } };
+    const consumed = await consumePendingSpawns(pi, harness.config, stub.meta()!, {
+      ui: stub.ui,
+      session: stub.session as never,
+    });
+
+    expect(consumed).toEqual(["clarify"]);
+    // The dequeue must NOT fall back to `meta.lastClarifyTurnArgs` (never
+    // written by auto dispatch) — the queued args really ride the mention.
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain("full-und?");
+    expect(sent[0]).toContain("Finalise the clarification");
+
+    const doc = harness.state().docs[0]!;
+    expect(doc.clarifyFinalisationRound).toBe(1);
+    expect(doc.clarifyFinalisationQueuedRound).toBeUndefined();
+    // The queue side never charges again: still exactly one round.
+    expect(doc.clarifyRounds).toBe(1);
+    expect(audits.some((line) => line.includes("queued_finalisation_dispatched"))).toBe(true);
   });
 });
 

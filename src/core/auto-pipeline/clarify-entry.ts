@@ -136,7 +136,8 @@ export async function runAutoClarifyRound(
       if (outcome === "deferred") {
         // A live same-agent twin exists; pendingSpawns + the 217 watchdog own
         // the retry. The round stays charged (it is the SAME round the dequeue
-        // dispatches), and a finalisation round keeps its marker debt.
+        // dispatches, with the SAME args), and a finalisation round keeps its
+        // marker debt as QUEUED until the dequeue really delivers it.
         await auditAutoDecision(config, {
           gate: "clarify_dispatch_deferred",
           decision: docState.decision.action,

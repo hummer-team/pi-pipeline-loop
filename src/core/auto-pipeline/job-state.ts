@@ -91,6 +91,15 @@ export interface AutoJobDocProgress {
    * again — it hands the document to the marker gate (`await-finalisation`).
    */
   clarifyFinalisationRound?: number;
+  /**
+   * 226 review round 2 (issue 2): the finalisation round was handed to
+   * `pendingSpawns` (deferred) but has NOT really been dispatched yet. Promoted
+   * to `clarifyFinalisationRound` by the dequeue delivery
+   * (`promoteClarifyQueuedFinalisation`); while it is set the settle seam counts
+   * the round as owned (no second `full-und?`), and the marker gate re-dispatches
+   * instead of failing when the queue entry is provably gone.
+   */
+  clarifyFinalisationQueuedRound?: number;
   // ─── 220 Phase 5: start-stage evidence (B7) ────────────────────────────────
   /** What the doc's start stage was verified against. */
   startStageBasis?: StartStageBasis;

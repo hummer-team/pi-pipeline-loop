@@ -22,6 +22,7 @@ import { readJobState } from "../../core/auto-pipeline/job-state";
 import { parseAutoJob } from "../../core/auto-pipeline/job-schema";
 import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
 import { __resetFinalizeStateForTests } from "../../core/auto-pipeline/finalize";
+import { deployHarnessAgents } from "./auto-harness";
 
 const SRC_ROOT = path.resolve(__dirname, "..", "..", "..");
 const TEMPLATE_JSON: PipelineJsonConfig = JSON.parse(
@@ -62,22 +63,10 @@ function writeFile(rel: string, content: string): void {
   fs.writeFileSync(abs, content, "utf8");
 }
 
-/** 226 review #1: deploy the clarify executor so the startup round really dispatches. */
+/** 226 review #1: deploy the clarify executor so the startup round really dispatches.
+ *  226 review round 2 (issue 3): reuses the shared harness fixture (DRY). */
 function writeAgentFixtures(): void {
-  const dir = path.join(ROOT, ".pi", "agents");
-  fs.mkdirSync(dir, { recursive: true });
-  for (const name of [
-    "feat-design-plan-agent",
-    "design-review-agent",
-    "develop-agent",
-    "code-review-agent",
-    "code-review-withfix-agent",
-  ]) {
-    fs.copyFileSync(
-      path.join(SRC_ROOT, "src", "template", "agents", `${name}.md`),
-      path.join(dir, `${name}.md`),
-    );
-  }
+  deployHarnessAgents({ root: ROOT });
 }
 
 /** Resolved config with the design-review stage kept or dropped. */

@@ -22,6 +22,7 @@ import { readJobState, resolveJobStatePath, writeJobState, createJobState } from
 import { hashJobBytes } from "../../core/auto-pipeline/job-schema";
 import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
 import { __resetFinalizeStateForTests } from "../../core/auto-pipeline/finalize";
+import { deployHarnessAgents } from "./auto-harness";
 
 const SRC_ROOT = path.resolve(__dirname, "..", "..", "..");
 const TEMPLATE_JSON: PipelineJsonConfig = JSON.parse(
@@ -136,21 +137,9 @@ function makeCtx() {
  * harness must satisfy the P-A pre-check (`resolveAgentMention`) — copy the
  * template agent files into the project root.
  */
+/** 226 review round 2 (issue 3): reuse the shared harness fixture (DRY). */
 function writeAgentFixtures(): void {
-  const dir = path.join(ROOT, ".pi", "agents");
-  fs.mkdirSync(dir, { recursive: true });
-  for (const name of [
-    "feat-design-plan-agent",
-    "design-review-agent",
-    "develop-agent",
-    "code-review-agent",
-    "code-review-withfix-agent",
-  ]) {
-    fs.copyFileSync(
-      path.join(SRC_ROOT, "src", "template", "agents", `${name}.md`),
-      path.join(dir, `${name}.md`),
-    );
-  }
+  deployHarnessAgents({ root: ROOT });
 }
 
 beforeEach(() => {

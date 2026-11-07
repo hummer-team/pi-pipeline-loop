@@ -27,6 +27,8 @@ import { docsDirsOf } from "../../docs-paths";
 import type { RuntimeCtx } from "../runtime-ctx";
 import { detectSessionRole } from "../session-role";
 import { writeJobState } from "./job-state";
+import type { AutoJobState } from "./job-state";
+import type { AutoJobConfig } from "./job-schema";
 import { readActiveJobContext } from "./config-overlay";
 import type { FinalizeCtx } from "./finalize";
 import { handleDocFailure } from "./finalize";
@@ -41,6 +43,7 @@ import {
   buildClarifyDocState,
   DEFAULT_CLARIFY_DEPS,
   FORCED_FULL_UND_ARGS,
+  type ClarifyDocState,
   type ClarifyEntryDeps,
 } from "./clarify-state";
 import { auditAutoDecision } from "./auto-audit";
@@ -68,6 +71,15 @@ export async function handleAutoClarifyMarkerMiss(
   // A foreign/unbound doc is not this seam's document: leave the settle flow
   // untouched instead of charging the auto job's counters.
   if (!docState) return false;
+
+  // 226 review round 2 (issue 2): a DEFERRED finalisation round lives in
+  // `pendingSpawns` — the document cannot carry the marker yet. The queue owns
+  // the round; failing the doc here was the "the finalisation question was
+  // never sent" bug.
+  const queuedRound = docState.progress.clarifyFinalisationQueuedRound;
+  if (queuedRound !== undefined) {
+    return handleQueuedFinalisation(ctx, config, meta, state, job, docState, deps, queuedRound);
+  }
 
   const canFallback =
     job.clarify.onExhausted === "self-confirm" && noteClarifyFallbackUsed({ state, docIndex: state.docIndex });
@@ -149,6 +161,97 @@ export async function handleAutoClarifyMarkerMiss(
 
   ctx.ui?.notify?.(
     `Auto job "${state.jobId}": clarify answers are missing — forcing one finalisation round for ${doc ?? "the requirement doc"}.`,
+  );
+  return true;
+}
+
+/**
+ * 226 review round 2 (issue 2): the finalisation round was QUEUED for the owner
+ * (`pendingSpawns`) but never dispatched.
+ *
+ * Two honest outcomes — never `clarify_marker_missing`:
+ * - the queue entry still exists → the marker cannot exist yet; leave the round
+ *   to the queue and consume the settle;
+ * - the entry is provably gone → the debt is void: refund the reservation the
+ *   deferral charged (the guide counts SUCCESSFUL dispatches only) and re-dispatch
+ *   through the ONE dispatch channel.
+ *
+ * @returns TRUE — the marker gate owned this settle either way
+ */
+async function handleQueuedFinalisation(
+  ctx: FinalizeCtx,
+  config: PipelineConfig,
+  meta: SessionMeta,
+  state: AutoJobState,
+  job: AutoJobConfig,
+  docState: ClarifyDocState,
+  deps: ClarifyEntryDeps,
+  queuedRound: number,
+): Promise<boolean> {
+  if (meta.pendingSpawns?.clarify) {
+    await auditAutoDecision(config, {
+      gate: "clarify_completion_marker",
+      decision: "deferred",
+      reason: "finalisation_queued",
+      round: String(queuedRound),
+    });
+    ctx.ui?.notify?.(
+      `Auto job "${state.jobId}": the finalisation round for ${docState.doc} is still queued — the marker gate waits for its delivery.`,
+    );
+    return true;
+  }
+
+  const progress = docState.progress;
+  progress.clarifyFinalisationQueuedRound = undefined;
+  progress.clarifyFinalisationRound = undefined;
+  // The deferred reservation never became a dispatch: refund exactly one round
+  // (never below zero) and drop the dedupe anchor so the re-dispatch is not
+  // swallowed by the 30s coalescing window.
+  const rounds = progress.clarifyRounds ?? 0;
+  if (rounds > 0) progress.clarifyRounds = rounds - 1;
+  progress.clarifyDispatchedAt = undefined;
+  progress.updatedAt = Date.now();
+  state.updatedAt = progress.updatedAt;
+  try {
+    await writeJobState(config.projectRoot, state);
+  } catch (err) {
+    auditAutoDiagnostic(
+      "clarify_queue_loss_persist_failed",
+      "Auto-job clarify queue recovery could not be persisted.",
+      { jobId: state.jobId, error: String(err) },
+      "error",
+    );
+  }
+  await auditAutoDecision(config, {
+    gate: "clarify_completion_marker",
+    decision: "requeue",
+    reason: "finalisation_queue_lost",
+    round: String(queuedRound),
+  });
+
+  const outcome = await dispatchClarifyRound(
+    ctx as never,
+    config,
+    meta,
+    state,
+    job,
+    docState,
+    deps,
+    FORCED_FULL_UND_ARGS,
+    buildClarifyFinalisationInstruction(resolveClarifyPromptMarkers(config)),
+  );
+  if (outcome === "not_spawned") {
+    // The re-dispatch failed as well: share the ONE failure accounting (stall++,
+    // freeze or terminal) — the document is not marker-guilty.
+    await noteClarifyDispatchFailure(ctx as never, config, meta, state, job, docState, deps, {
+      channel: "settle",
+    });
+    return true;
+  }
+  ctx.ui?.notify?.(
+    outcome === "deferred"
+      ? `Auto job "${state.jobId}": the lost finalisation round was re-queued for ${docState.doc}.`
+      : `Auto job "${state.jobId}": the lost finalisation round was re-dispatched for ${docState.doc}.`,
   );
   return true;
 }

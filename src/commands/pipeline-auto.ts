@@ -850,14 +850,35 @@ async function startPendingDoc(input: {
   // resurrect a job the accounting already finalised. Re-read the sidecar,
   // adopt its facts, and never overwrite a state that left `running`.
   const persisted = readJobState(projectRoot, jobId);
-  if (persisted && persisted.status !== "running") {
+  // 226 review round 2 (issue 1): a failure that kept the JOB `running`
+  // (`docs.onFailure: continue`) still took THIS document away from the start:
+  // the shared transaction finalised it (`docs[index].status = "failed"`), may
+  // have scheduled the next hop (`pendingContinuation`) or even started the next
+  // doc in this very process (`docIndex` advanced). Writing the pre-start state
+  // back would then resurrect a failed doc, produce TWO `running` docs, or clear
+  // a hop that was just queued. Any of those facts means this start lost the doc.
+  const persistedDoc = persisted?.docs[target.index];
+  const supersededByFailureAccounting =
+    persisted !== null &&
+    (persistedDoc === undefined ||
+      persistedDoc.status !== "pending" ||
+      persisted.docIndex !== state.docIndex ||
+      (persisted.pendingContinuation !== undefined && state.pendingContinuation === undefined));
+  if (persisted && (persisted.status !== "running" || supersededByFailureAccounting)) {
     await safeWriteAuditLog("pipeline_auto_start_terminated", {
       jobId,
       doc: target.doc.doc,
       status: persisted.status,
       stopReason: persisted.stopReason ?? "",
+      ...(supersededByFailureAccounting ? { reason: "superseded_by_failure_accounting" } : {}),
     }, "warn");
-    return { success: false, error: persisted.stopReason ?? "job_terminated_during_start" };
+    return {
+      success: false,
+      error:
+        persisted.stopReason ??
+        persistedDoc?.failReason ??
+        "job_terminated_during_start",
+    };
   }
   if (persisted) Object.assign(state, persisted);
 

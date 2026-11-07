@@ -17,6 +17,7 @@ import { __resetAutoJobLockForTests } from "../../core/auto-pipeline/config-over
 import { readJobState } from "../../core/auto-pipeline/job-state";
 import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
 import { __resetFinalizeStateForTests } from "../../core/auto-pipeline/finalize";
+import { deployHarnessAgents } from "./auto-harness";
 import {
   checkStartDispatchable,
   describeStartDispatch,
@@ -70,21 +71,9 @@ function writeFile(rel: string, content: string): void {
   fs.writeFileSync(abs, content, "utf8");
 }
 
+/** 226 review round 2 (issue 3): reuse the shared harness fixture (DRY). */
 function writeAgentFixtures(): void {
-  const dir = path.join(ROOT, ".pi", "agents");
-  fs.mkdirSync(dir, { recursive: true });
-  for (const name of [
-    "feat-design-plan-agent",
-    "design-review-agent",
-    "develop-agent",
-    "code-review-agent",
-    "code-review-withfix-agent",
-  ]) {
-    fs.copyFileSync(
-      path.join(SRC_ROOT, "src", "template", "agents", `${name}.md`),
-      path.join(dir, `${name}.md`),
-    );
-  }
+  deployHarnessAgents({ root: ROOT });
 }
 
 function config(): PipelineConfig {

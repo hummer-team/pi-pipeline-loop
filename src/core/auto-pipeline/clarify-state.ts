@@ -130,7 +130,12 @@ export async function buildClarifyDocState(input: {
     needsClarifyStreak: progress.clarifyNeedsClarifyStreak ?? 0,
     needsClarifyLimit: CLARIFY_NEEDS_CLARIFY_LIMIT,
     // 226 Phase 1: the finalisation round already dispatched (sidecar fact).
-    finalisationDispatched: progress.clarifyFinalisationRound !== undefined,
+    // 226 review round 2 (issue 2): a round QUEUED for `pendingSpawns` owns the
+    // debt the same way — the dequeue delivers the SAME round (it carries the
+    // finalisation instruction), so the settle must not dispatch a second one.
+    finalisationDispatched:
+      progress.clarifyFinalisationRound !== undefined ||
+      progress.clarifyFinalisationQueuedRound !== undefined,
     assessment,
     ...(progress.clarifyLastRound !== undefined ? { lastDispatchedRound: progress.clarifyLastRound } : {}),
     ...(progress.clarifyDispatchedAt !== undefined ? { lastDispatchedAt: progress.clarifyDispatchedAt } : {}),
@@ -172,6 +177,9 @@ export function resetClarifyCounters(progress: AutoJobDocProgress, now: number):
   // 226 Phase 1: the finalisation fact dies with the counters — a confirmed
   // document starts its next round (or the next doc) without marker debt.
   progress.clarifyFinalisationRound = undefined;
+  // 226 review round 2 (issue 2): a queued-but-never-delivered finalisation owns
+  // no debt after confirmation either.
+  progress.clarifyFinalisationQueuedRound = undefined;
   progress.updatedAt = now;
 }
 

@@ -460,6 +460,65 @@ describe("226 Phase 4: three-channel failure bookkeeping", () => {
     expect(audits.some((line) => line.includes("clarify_dispatch") && line.includes("clarify_startup_round"))).toBe(true);
   });
 
+  it("startup failure + onFailure:continue → the failed doc is never resurrected and docIndex follows the running doc", async () => {
+    // 226 review round 2 (issue 1): doc 0 is pre-charged to the stall cap, so
+    // the startup dispatch failure FINALISES it while the job stays `running`
+    // (`onFailure: continue`) and the shared transaction really starts doc 1 in
+    // this process. Doc 1 is fresh (its first failure only freezes), so it ends
+    // up `running`. The runner must not write the pre-start state back.
+    const jobPath = path.join(harness.root, "docs", "jobs", `${HARNESS_JOB_ID}.yaml`);
+    fs.writeFileSync(
+      jobPath,
+      [
+        "version: 1",
+        "enabled: true",
+        "tier: rule",
+        "docs:",
+        "  list:",
+        `    - doc: ${HARNESS_DOCS[0]}`,
+        `    - doc: ${HARNESS_DOCS[1]}`,
+        "  onFailure: continue",
+        "chain:",
+        "  newSession: false",
+        // Doc 1's first startup failure only freezes; `abort` keeps the job
+        // `running` deterministically (a `resume` policy would re-dispatch and
+        // this test is about the runner's write-back, not the retry loop).
+        "freezePolicy:",
+        "  onFreeze: abort",
+      ].join("\n"),
+      "utf8",
+    );
+    writeDoc(["# 200_Feat", ...MANDATORY].join("\n"), HARNESS_DOCS[0]!);
+    writeDoc(["# 200_Feat", ...MANDATORY].join("\n"), HARNESS_DOCS[1]!);
+    const charged = harness.state();
+    charged.docs[0]!.status = "pending";
+    charged.docs[0]!.lastStage = undefined;
+    charged.docs[0]!.clarifyStalls = 2;
+    await writeJobState(harness.root, charged);
+    const stub = createSessionStub(makeTestMeta({ currentStage: "fix", pipelineId: "pipe-226-e2e-continue" }));
+
+    const result = await startAutoJob({ config: harness.config, ctx: stub as never, jobId: HARNESS_JOB_ID });
+
+    // The start LOST its document → report the failure, never write it back.
+    expect(result.success).toBe(false);
+    const persisted = harness.state();
+    expect(persisted.status).toBe("running");
+    // The failed doc stays failed (no `running` + `failReason` contradiction).
+    expect(persisted.docs[0]!.status).toBe("failed");
+    expect(persisted.docs[0]!.failReason).toBe("clarify_dispatch_failed");
+    // Exactly ONE running doc, and `docIndex` is the doc that really runs.
+    expect(persisted.docs.filter((doc) => doc.status === "running")).toHaveLength(1);
+    expect(persisted.docs[1]!.status).toBe("running");
+    expect(persisted.docIndex).toBe(1);
+    expect(
+      audits.some(
+        (line) =>
+          line.includes("pipeline_auto_start_terminated") &&
+          line.includes("superseded_by_failure_accounting"),
+      ),
+    ).toBe(true);
+  });
+
   it("resume channel: via the EXPORTED dispatchAfterResume, labelled channel=resume, no refund row", async () => {
     // No agents deployed; the active job owns the doc.
     writeDoc(["# 200_Feat", ...MANDATORY].join("\n"));
@@ -477,6 +536,58 @@ describe("226 Phase 4: three-channel failure bookkeeping", () => {
     expect(audits.some((line) => line.includes("clarify_round_refund"))).toBe(false);
     const persisted = harness.state();
     expect(persisted.docs[0]!.clarifyRounds ?? 0).toBe(0);
+  });
+});
+
+describe("226 review round 2: a queued finalisation is never marker-guilty", () => {
+  it("lost queue entry → refund + re-dispatch, never clarify_marker_missing", async () => {
+    deployHarnessAgents(harness);
+    writeDoc(READY_FULL_UND_DOC);
+    const state = harness.state();
+    state.docs[0]!.clarifyRounds = 1;
+    state.docs[0]!.clarifyLastRound = 1;
+    state.docs[0]!.clarifyDispatchedAt = Date.now();
+    state.docs[0]!.clarifyFinalisationQueuedRound = 1;
+    await writeJobState(harness.root, state);
+    const meta = makeMeta(); // no pendingSpawns ⇒ the queue entry is provably gone
+    const { ctx } = makeRealCtx(meta);
+
+    expect(await handleAutoClarifyMarkerMiss(ctx as never, harness.config, meta)).toBe(true);
+
+    const after = harness.state();
+    // The document is NOT marker-guilty: the round never reached it.
+    expect(after.docs[0]!.status).toBe("running");
+    expect(after.docs[0]!.failReason).toBeUndefined();
+    expect(sentMessages.some((message) => message.includes("full-und?"))).toBe(true);
+    // The re-dispatch promoted the fact; the lost reservation was refunded, so
+    // the budget still counts exactly ONE real dispatch.
+    expect(after.docs[0]!.clarifyFinalisationRound).toBe(1);
+    expect(after.docs[0]!.clarifyFinalisationQueuedRound).toBeUndefined();
+    expect(after.docs[0]!.clarifyRounds).toBe(1);
+    expect(audits.some((line) => line.includes("finalisation_queue_lost"))).toBe(true);
+  });
+
+  it("still-queued entry → the marker gate waits instead of failing the doc", async () => {
+    writeDoc(READY_FULL_UND_DOC);
+    const state = harness.state();
+    state.docs[0]!.clarifyFinalisationQueuedRound = 1;
+    await writeJobState(harness.root, state);
+    const meta = {
+      ...makeMeta(),
+      pendingSpawns: {
+        clarify: { agentName: "feat-design-plan-agent", requestedAt: Date.now(), attempts: 0 },
+      },
+    } as SessionMeta;
+    const { ctx } = makeRealCtx(meta);
+
+    expect(await handleAutoClarifyMarkerMiss(ctx as never, harness.config, meta)).toBe(true);
+
+    const after = harness.state();
+    expect(after.docs[0]!.status).toBe("running");
+    expect(after.docs[0]!.failReason).toBeUndefined();
+    expect(after.docs[0]!.clarifyFinalisationQueuedRound).toBe(1);
+    expect(sentMessages).toHaveLength(0);
+    expect(audits.some((line) => line.includes("finalisation_queued"))).toBe(true);
   });
 });
 
