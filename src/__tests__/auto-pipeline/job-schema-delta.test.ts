@@ -47,7 +47,7 @@ describe("job-schema delta — default snapshot (220 D7 table)", () => {
     }).toEqual({
       tier: "assisted",
       clarify: { strategy: "self-answer", maxRounds: 5, onExhausted: "stop" },
-      designReview: { mode: "auto", maxRounds: 3, onFail: "auto-revise" },
+      designReview: { mode: "smart", maxRounds: 3, onFail: "auto-revise" },
       reviewFix: { maxRounds: 6, maxLoopsPerStage: 6 },
       verify: { maxAttempts: 3 },
       writePolicy: {
@@ -69,7 +69,7 @@ describe("job-schema delta — default snapshot (220 D7 table)", () => {
       },
       chain: { newSession: true, onSessionFail: "same-session" },
       docs: { skipCompleted: true, onFailure: "stop" },
-      confirm: { plan: "auto", review: "auto" },
+      confirm: { plan: "auto", review: "auto", "design-review": "smart" },
       configured: { verifyMaxAttempts: false, gitModify: false },
     });
   });

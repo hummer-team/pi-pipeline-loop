@@ -24,8 +24,23 @@
 
 import { createHash } from "node:crypto";
 import { parse as yamlParse } from "yaml";
-import type { PipelineStage } from "../../types";
+import type { PipelineStage, ConfirmMode } from "../../types";
 import { RESUMABLE_STAGES } from "../../constants";
+
+/**
+ * D-13: the ONLY staged keys carrying a confirm gate. The order is the
+ * canonical spelling used in guides and audit output.
+ */
+export const CONFIRM_STAGE_KEYS = ["plan", "review", "design-review"] as const;
+
+export type ConfirmStageKey = (typeof CONFIRM_STAGE_KEYS)[number];
+
+/** Default confirm matrix (D-13): plan/review unattended, design-review smart. */
+export const DEFAULT_CONFIRM_MODES: Record<ConfirmStageKey, ConfirmMode> = {
+  plan: "auto",
+  review: "auto",
+  "design-review": "smart",
+};
 
 /** One queued document of the job. */
 export interface AutoJobDoc {
@@ -63,9 +78,14 @@ export interface AutoJobConfig {
   docs: { list: AutoJobDoc[]; skipCompleted: boolean; onFailure: "stop" | "continue" };
   /** 220 D6: ONE strategy in v1 (self-answer); the removed `mode` is an error. */
   clarify: { strategy: "self-answer"; maxRounds: number; onExhausted: ClarifyOnExhausted };
-  confirm: { plan: "auto" | "manual" | "smart"; review: "auto" | "manual" | "smart" };
-  /** v1 accepts only "auto" (template `design-review.confirm.mode` default is already auto). */
-  designReview: { mode: "auto"; maxRounds: number; onFail: DesignReviewOnFail };
+  /** D-13: the ONLY decision source. Keys = stages carrying a confirm gate. */
+  confirm: Record<ConfirmStageKey, ConfirmMode>;
+  /**
+   * D-9/D-13: `enabled` decides whether the overlay rewrites
+   * `stages.plan.nextStage`; `mode` is a deprecated read-only mirror of
+   * `confirm["design-review"]`.
+   */
+  designReview: { enabled?: boolean; mode?: ConfirmMode; maxRounds: number; onFail: DesignReviewOnFail };
   reviewFix: { maxRounds: number; maxLoopsPerStage: number };
   /** Q15: verify attempts allowed before the verify-failure hard stop. */
   verify: { maxAttempts: number };
@@ -109,6 +129,9 @@ export type AutoJobParseResult =
 
 const NOT_SUPPORTED_SUFFIX = "— not supported in this version";
 
+/** Human-readable default matrix used in warnings (D-13). */
+const CONFIRM_DEFAULTS_LABEL = '{ plan: "auto", review: "auto", "design-review": "smart" }';
+
 /** Error text used for keys removed by 220 (never silently ignored). */
 const REMOVED_KEY_SUFFIX = "— removed in this version";
 
@@ -124,7 +147,7 @@ function asNonNegativeNumber(value: unknown): number | null {
 
 // ─── Field validators (each returns true = keep, false = error) ──────────────
 
-function isConfirmMode(value: unknown): value is "auto" | "manual" | "smart" {
+function isConfirmMode(value: unknown): value is ConfirmMode {
   return value === "auto" || value === "manual" || value === "smart";
 }
 
@@ -530,29 +553,44 @@ export function parseAutoJob(yamlText: string, sourcePath: string): AutoJobParse
     warnings.push('"clarify" not set — using default { strategy: "self-answer", maxRounds: 5, onExhausted: "stop" }');
   }
 
-  // confirm — per-stage mode override (defaults auto).
-  let confirm: AutoJobConfig["confirm"] | null = { plan: "auto", review: "auto" };
+  // confirm — D-13: ONE decision source for every staged confirm gate.
+  // Defaults are FILLED for consumers; `explicitConfirm` records only keys the
+  // job file actually spelled out — the alias conflict rule below judges
+  // presence, never the default fill.
+  let confirm: AutoJobConfig["confirm"] | null = { ...DEFAULT_CONFIRM_MODES };
+  const explicitConfirm = new Set<ConfirmStageKey>();
   const confirmRaw = asObject(root.confirm);
   if (confirmRaw) {
-    rejectUnknownKeys(confirmRaw, ["plan", "review"], "confirm.", errors);
-    for (const key of ["plan", "review"] as const) {
+    // Unknown key = error (not warn) — D-13 hard rule 1.
+    rejectUnknownKeys(confirmRaw, [...CONFIRM_STAGE_KEYS], "confirm.", errors);
+    for (const key of CONFIRM_STAGE_KEYS) {
       const value = confirmRaw[key];
       if (value === undefined) continue;
-      if (isConfirmMode(value)) {
-        if (confirm) confirm[key] = value;
-      } else {
+      if (!isConfirmMode(value)) {
         applyEnumError(errors, `confirm.${key}`, '"auto" | "manual" | "smart"');
         confirm = null;
         break;
       }
-      if (value !== "auto") {
-        warnings.push(`"confirm.${key}" = ${String(value)} (non-auto values are only effective in human-machine mode)`);
+      if (key !== "design-review" && value === "manual") {
+        // A TUI gate cannot be answered in an unattended run — the old
+        // "non-auto is ignored" warning described a silent deadlock.
+        errors.push(`"confirm.${key}" = "manual" is not satisfiable in an auto job — use "auto" | "smart"`);
+        confirm = null;
+        break;
       }
+      if (confirm) confirm[key] = value;
+      explicitConfirm.add(key);
     }
+  } else if (root.confirm === undefined) {
+    warnings.push(`"confirm" not set — using default ${CONFIRM_DEFAULTS_LABEL}`);
   }
 
-  // designReview — v1 mode accepts ONLY "auto"; FAIL routing is `onFail`.
-  let designReview: AutoJobConfig["designReview"] | null = { mode: "auto", maxRounds: 3, onFail: "auto-revise" };
+  // designReview — D-9/D-13: `enabled` controls the topology rewrite, `mode` is
+  // the deprecated alias of `confirm["design-review"]` (resolved below).
+  let designReview: AutoJobConfig["designReview"] | null = { maxRounds: 3, onFail: "auto-revise" };
+  let designReviewMode: ConfirmMode | undefined;
+  let designReviewModeExplicit = false;
+  let designReviewEnabled: boolean | undefined;
   const designReviewRaw = root.designReview;
   if (designReviewRaw !== undefined) {
     const d = asObject(designReviewRaw);
@@ -560,10 +598,23 @@ export function parseAutoJob(yamlText: string, sourcePath: string): AutoJobParse
       errors.push('"designReview" must be an object');
       designReview = null;
     } else {
-      rejectUnknownKeys(d, ["mode", "maxRounds", "onFail"], "designReview.", errors);
-      if (d.mode !== undefined && d.mode !== "auto") {
-        applyEnumError(errors, "designReview.mode", '"auto"');
-        designReview = null;
+      rejectUnknownKeys(d, ["enabled", "mode", "maxRounds", "onFail"], "designReview.", errors);
+      if (d.enabled !== undefined) {
+        if (typeof d.enabled === "boolean") {
+          designReviewEnabled = d.enabled;
+        } else {
+          errors.push('"designReview.enabled" must be a boolean');
+          designReview = null;
+        }
+      }
+      if (d.mode !== undefined) {
+        if (isConfirmMode(d.mode)) {
+          designReviewMode = d.mode;
+          designReviewModeExplicit = true;
+        } else {
+          applyEnumError(errors, "designReview.mode", '"auto" | "manual" | "smart"');
+          designReview = null;
+        }
       }
       let maxRounds = 3;
       if (d.maxRounds !== undefined) {
@@ -586,12 +637,42 @@ export function parseAutoJob(yamlText: string, sourcePath: string): AutoJobParse
           designReview = null;
         }
       }
-      if (errors.length === 0 && designReview !== null) {
-        designReview = { mode: "auto", maxRounds, onFail };
+      if (designReview !== null) {
+        designReview = {
+          ...(designReviewEnabled !== undefined ? { enabled: designReviewEnabled } : {}),
+          maxRounds,
+          onFail,
+        };
       }
     }
   } else {
-    warnings.push('"designReview" not set — using default { mode: "auto", maxRounds: 3, onFail: "auto-revise" }');
+    warnings.push(
+      '"designReview" not set — using default { maxRounds: 3, onFail: "auto-revise" } (topology untouched)',
+    );
+  }
+
+  // D-13 hard rule 2 — the alias is judged by PRESENCE, never by the default
+  // fill: an explicit `mode` only wins when `confirm.design-review` is absent.
+  if (designReviewModeExplicit && designReviewMode !== undefined) {
+    if (explicitConfirm.has("design-review")) {
+      if (confirm !== null && confirm["design-review"] !== designReviewMode) {
+        errors.push('"designReview.mode" conflicts with "confirm.design-review"');
+      } else {
+        warnings.push('"designReview.mode" is deprecated — use "confirm.design-review" only');
+      }
+    } else if (confirm !== null) {
+      confirm["design-review"] = designReviewMode;
+      warnings.push(
+        `"designReview.mode" is deprecated — use "confirm.design-review" (value "${designReviewMode}" mirrored)`,
+      );
+    }
+  }
+  if (designReview !== null) {
+    // The mirror always reflects the FINAL decision source.
+    designReview = {
+      ...designReview,
+      mode: confirm !== null ? confirm["design-review"] : designReviewMode ?? DEFAULT_CONFIRM_MODES["design-review"],
+    };
   }
 
   // reviewFix budgets (defaults conservative; always warned when absent).

@@ -177,7 +177,21 @@ function setLiveConfigPath(liveConfig: PipelineConfig, configPath: string, value
   // stages.<stage>.<field>.<leaf> — never invents a missing stage block.
   if (segments[0] === "stages") {
     const stage = segments[1] ?? "";
-    if (!isStageName(stage) || segments.length !== 4) return;
+    if (!isStageName(stage)) return;
+
+    // stages.<stage>.<scalarField> — topology keys (D-9). The stage must exist;
+    // the field is only created when setting (never when deleting).
+    if (segments.length === 3) {
+      const field = segments[2]!;
+      const stages = asMutableRecord(live.stages);
+      const stageObj = stages ? asMutableRecord(stages[stage]) : null;
+      if (!stageObj) return;
+      if (value === undefined) delete stageObj[field];
+      else stageObj[field] = value;
+      return;
+    }
+
+    if (segments.length !== 4) return;
     const stages = asMutableRecord(live.stages);
     const stageObj = stages ? asMutableRecord(stages[stage]) : null;
     if (!stageObj) return;
@@ -277,10 +291,11 @@ export function overlayJobOnJson(
   };
 
   // Per-stage confirm modes (G2 zero-code — read by the existing confirm gate).
-  for (const key of ["plan", "review"] as const) {
-    const mode = job.confirm?.[key];
+  // D-16: iterate the mapping, never a hardcoded list. The parser already
+  // rejected unknown stage keys, and a stage absent from the base is skipped.
+  for (const [key, mode] of Object.entries(job.confirm ?? {})) {
     if (mode === undefined) continue;
-    const stageBlock = json.stages ? json.stages[key] : undefined;
+    const stageBlock = json.stages?.[key as PipelineStage];
     if (!stageBlock) continue; // Stage missing from base: never invent one.
     const confirmBlock: Record<string, unknown> =
       stageBlock.confirm !== undefined
@@ -288,6 +303,24 @@ export function overlayJobOnJson(
         : {};
     recordSet(`confirm.${key}`, `stages.${key}.confirm.mode`, confirmBlock, "mode", mode);
     stageBlock.confirm = confirmBlock as unknown as typeof stageBlock.confirm;
+  }
+
+  // D-9: the branch topology is config truth. `enabled:true` adds the plan→
+  // design-review edge when the JSON lacks it; `enabled:false` removes it by
+  // pointing plan at the design-review successor. Absent = never touch topology.
+  const planStage = json.stages?.plan;
+  const drStage = json.stages?.["design-review"];
+  if (planStage && drStage && job.designReview.enabled !== undefined) {
+    const target: PipelineStage | null = job.designReview.enabled
+      ? "design-review"
+      : (drStage.nextStage ?? "develop");
+    recordSet(
+      "designReview.enabled",
+      "stages.plan.nextStage",
+      planStage as unknown as Record<string, unknown>,
+      "nextStage",
+      target,
+    );
   }
 
   // reviewFix budgets → global loop knobs.

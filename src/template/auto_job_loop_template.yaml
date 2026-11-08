@@ -63,14 +63,20 @@ clarify:
                                # stop = 预算耗尽即冻结（stopReason clarify_budget_exhausted）
                                # self-confirm = 耗尽后强制自确认一次再进入下一阶段
 
-# 覆盖 pipeline_loop.json 的 stages.plan/review.confirm.mode（confirm.mode=auto 即无人工门）。
+# 唯一决策源（D-13）：覆盖 pipeline_loop.json 的 stages.<stage>.confirm.mode。
+# 键集合 = 带 confirm 门的阶段；未声明的键取缺省：
+#   { plan: auto, review: auto, design-review: smart }
+# fail-fast：未知键 / 未知 mode 报错；plan|review 不接受 manual（无人值守无法回答 TUI 门）。
 confirm:
   plan: auto
   review: auto
+  design-review: smart         # auto | smart | manual（auto job 下 manual = FAIL 即停并上报）
 
-# v1 的 mode 仅接受 auto（manual → 解析报错）。
 designReview:
-  mode: auto
+  # mode: auto                 # deprecated：等价于 confirm.design-review，勿再书写
+  # enabled: true              # 可选：true = 强制 plan → design-review 支线；
+  #                            #       false = 移除该支线（plan 指向 design-review 的后继）；
+  #                            #       缺省 = 不改写拓扑
   maxRounds: 3                 # 独立轮次预算：第 N 轮 PASS 照常推进，第 N+1 次派发才冻结
   onFail: auto-revise          # auto-revise | stop（219 的 failAction 已移除）
                                # auto-revise = 依赖既有 auto 语义继续修订；

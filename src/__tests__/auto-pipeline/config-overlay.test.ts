@@ -121,6 +121,7 @@ describe("config-overlay — overlayJobOnJson (pure)", () => {
         "protect.protectedPathPolicy",
         "protect.whitelistAllow",
         "protect.whitelistMiss",
+        "stages.design-review.confirm.mode",
         "stages.plan.confirm.mode",
         "stages.review.confirm.mode",
       ].sort(),

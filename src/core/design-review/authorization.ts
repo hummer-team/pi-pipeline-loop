@@ -46,6 +46,17 @@ export interface DesignReviewAuthOpts {
 }
 
 /**
+ * D-8/D-10: the JSON stage can actually carry a design-review loop.
+ * Shared by the command-layer job validation and the overlay consumers so the
+ * "enabled" judgement can never diverge (same predicate as stage-advancer's
+ * "Auto Review Plan" enablement).
+ */
+export function isDesignReviewStageEnabled(config: PipelineConfig): boolean {
+  const stage = config.stages["design-review"];
+  return !!stage && !stage.disabled && stage.verify?.require !== false && !!stage.agentPath;
+}
+
+/**
  * Validates prerequisites for design-review authorisation.
  *
  * Delegates shared document/asset resolution to `entry.ts` so the menu path

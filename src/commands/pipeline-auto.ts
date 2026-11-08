@@ -28,6 +28,8 @@ import { startNewPipeline } from "./pipeline-start";
 import { safeWriteAuditLog } from "../utils/auditLog";
 import { shouldRecordAutoDecision } from "../core/auto-pipeline/auto-audit";
 import { parseAutoJob, hashJobBytes, type AutoJobConfig } from "../core/auto-pipeline/job-schema";
+// D-8/D-10: ONE enablement predicate shared with the overlay consumers.
+import { isDesignReviewStageEnabled } from "../core/design-review/authorization";
 import {
   clearPendingContinuation,
   createJobState,
@@ -605,7 +607,9 @@ export async function startAutoJob(input: {
   // lock/sidecar, so a misconfigured job leaves no state behind. The overlay
   // only maps decision keys and never enables a stage, so this is equivalent to
   // judging it right after `applyOverlay` — and strictly earlier is safer.
-  if (job.tier === "assisted" && !config.stages["design-review"]?.verify?.require) {
+  // D-8/D-10: one shared predicate — a second equivalent check must never exist.
+  const drEnabled = isDesignReviewStageEnabled(config);
+  if (job.tier === "assisted" && !drEnabled) {
     await safeWriteAuditLog("pipeline_auto_tier_rejected", {
       jobId,
       tier: job.tier,
@@ -614,6 +618,27 @@ export async function startAutoJob(input: {
     return preLockFailure(
       `auto job "${jobId}" rejected: tier "assisted" requires the design-review stage to be enabled`,
     );
+  }
+
+  // D-9: the overlay never invents a stage, and a disabled stage is silently
+  // reconnected by resolve — an EXPLICIT enablement that cannot happen is a
+  // configuration conflict, never a silent skip.
+  if (job.designReview.enabled === true && !drEnabled) {
+    await safeWriteAuditLog("pipeline_auto_design_review_rejected", {
+      jobId,
+      reason: "design_review_stage_not_enabled",
+    }, "warn");
+    return preLockFailure(
+      `auto job "${jobId}" rejected: designReview.enabled requires an enabled stages["design-review"] ` +
+        "(agentPath, not disabled, verify.require !== false)",
+    );
+  }
+  if (job.tier === "assisted" && job.designReview.enabled === false) {
+    await safeWriteAuditLog("pipeline_auto_design_review_rejected", {
+      jobId,
+      reason: "tier_assisted_cannot_disable_design_review",
+    }, "warn");
+    return preLockFailure(`auto job "${jobId}" rejected: tier "assisted" cannot disable design-review`);
   }
 
   if (input.continuation === true) {
@@ -745,6 +770,18 @@ async function startPendingDoc(input: {
     entries: snapshot.entries,
   };
   await writeJobState(projectRoot, state);
+
+  // D-13 hard rule 4: `enabled: false` is a DELIBERATE topology change — make
+  // the branch removal visible in the audit trail (applyOverlay stays a pure
+  // write path and never audits).
+  const disabledEntry = snapshot.entries.find((e) => e.configPath === "stages.plan.nextStage");
+  if (job.designReview.enabled === false && disabledEntry) {
+    await safeWriteAuditLog("design_review_disabled_by_job", {
+      jobId,
+      from: String(disabledEntry.from),
+      to: String(disabledEntry.to),
+    }, "warn");
+  }
 
   await safeWriteAuditLog("pipeline_auto_start", {
     jobId,

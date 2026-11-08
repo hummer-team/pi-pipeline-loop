@@ -49,7 +49,8 @@ describe("job-schema — legal minimal set + default fill", () => {
     expect(job.clarify.strategy).toBe("self-answer");
     expect(job.clarify.maxRounds).toBe(5);
     expect(job.clarify.onExhausted).toBe("stop");
-    expect(job.designReview.mode).toBe("auto");
+    expect(job.designReview.mode).toBe("smart");
+    expect(job.confirm).toEqual({ plan: "auto", review: "auto", "design-review": "smart" });
     expect(job.reviewFix.maxRounds).toBe(6);
     expect(job.reviewFix.maxLoopsPerStage).toBe(6);
     expect(job.stopConditions.maxTotalLoops).toBe(20);
@@ -112,7 +113,6 @@ describe("job-schema — fail-fast enums (known-but-unsupported = ERROR)", () =>
   const base = "version: 1\ndocs:\n  list:\n    - doc: docs/a.md\n";
 
   it.each([
-    ["designReview.mode manual", `${base}designReview:\n  mode: manual\n`],
     [
       "docs.onFailure halt",
       "version: 1\ndocs:\n  list:\n    - doc: docs/a.md\n  onFailure: halt\n",
