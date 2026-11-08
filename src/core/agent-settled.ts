@@ -65,6 +65,9 @@ import { handleAutoSettle, handleAutoClarifyMarkerMiss } from "./auto-pipeline/s
 // child-deferred design-review entries.
 import { consumeAutoStopPending } from "./auto-pipeline/stop-policy";
 import { maybeEnterPendingDesignReview } from "./design-review/entry-automation";
+// 227 Phase 4 (D-3): bounded owner re-prompt for a silent (no-advance) settle.
+import { maybeAutoAskReprompt } from "./auto-pipeline/ask-reprompt";
+import type { FinalizeCtx } from "./auto-pipeline/finalize";
 import { runAutoClarifyRound } from "./auto-pipeline/clarify-entry";
 import { isAutoJobActive } from "./auto-pipeline/config-overlay";
 // 221 Phase 2: one-shot human completion release (settle-side fallback).
@@ -108,6 +111,14 @@ export function createAgentSettled(
     event: "agent_settled",
     handler: async (ctx: RuntimeCtx): Promise<void> => {
       const rawMeta = ctx.session.getMeta() as SessionMeta | undefined;
+      // 227 Phase 4 (D-3): the pre-settle fingerprint decides whether THIS
+      // settle was silent (no advance, no gate, no dispatch).
+      const repromptBefore = {
+        stage: rawMeta?.currentStage ?? "clarify",
+        stageStartTime: rawMeta?.stageStartTime ?? 0,
+        visitCount: rawMeta?.stageVisitOrder?.length ?? 0,
+      };
+      try {
       // Phase 1 (197): refresh audit routing context on every hook entry
       setAuditPipelineContext(rawMeta?.pipelineId);
 
@@ -1223,6 +1234,20 @@ export function createAgentSettled(
       } else {
         // 148 Phase 4: pass ctxWithPi so applyVerifyFail can send wake message via pi.sendUserMessage
         await applyVerifyFail(ctxWithPi, meta, meta.currentStage, sharedResult, "rule", ui, config);
+      }
+      } finally {
+        // 227 Phase 4 (D-3): bounded owner re-prompt for a silent settle. The
+        // helper is fail-open (audited) and inert on the human track.
+        await maybeAutoAskReprompt({
+          ctx: ctx as unknown as FinalizeCtx,
+          config,
+          before: repromptBefore,
+        }).catch(async (err: unknown) => {
+          await writeAuditLog("auto_ask_reprompt_error", {
+            pipelineId: rawMeta?.pipelineId ?? "",
+            reason: String(err),
+          }, "error");
+        });
       }
     },
   };

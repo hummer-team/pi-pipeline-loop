@@ -1094,6 +1094,12 @@ export interface SessionMeta {
   autoJobStopPending?: { reason: string; at: number; pipelineId?: string };
 
   /**
+   * 227 Phase 4 (D-3): bounded owner re-prompt budget for a silent
+   * (no-advance) settle. Cleared with the meta period (meta-reset).
+   */
+  autoAskReprompt?: { stage: PipelineStage; fingerprint: string; count: number };
+
+  /**
    * 219 Phase 6: the interrupt-continuity verdict written by `session_start`
    * (`decideContinuity`). Read by the prompt injector to render the
    * "task continuity" section; `undefined` means "no interruption context".

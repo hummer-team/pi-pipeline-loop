@@ -78,6 +78,8 @@ import {
 } from "./design-review/write-policy";
 import type { RuntimeCtx } from "./runtime-ctx";
 import { effectiveMax, remainingRoundsOf } from "../utils/stage-visit";
+// 227 Phase 4 (D-3): the unattended auto-job contract section.
+import { buildUnattendedSection } from "./auto-pipeline/unattended-guidance";
 
 /**
  * Builds Part 1: Context Reference.
@@ -1172,7 +1174,13 @@ export function createPromptInjector(
     ? "\n\n---\n\n" + lowBudgetWarning
     : "";
 
-  const pluginPromptFull = pluginPrompt + pipelineStateSuffix + runHealthSuffix + lowBudgetSuffix;
+  // 227 Phase 4 (D-3): the unattended contract rides the SAME single suffix
+  // boundary (yml / fallback / default paths all covered exactly once).
+  const unattendedSection = buildUnattendedSection(config, meta);
+  const unattendedSuffix = unattendedSection ? "\n\n---\n\n" + unattendedSection : "";
+
+  const pluginPromptFull =
+    pluginPrompt + pipelineStateSuffix + runHealthSuffix + lowBudgetSuffix + unattendedSuffix;
 
       // 194 Phase 2 (task 4 / C4): the FINAL plugin content — yml template,
       // fallback, or default assembly, plus frozen-state and run-health

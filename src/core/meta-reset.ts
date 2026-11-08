@@ -174,6 +174,12 @@ export function buildNewPeriodResetFields(
     // stale `continuity: "resume"` renders the TASK CONTINUITY section forever.
     autoJob: undefined,
     continuity: undefined,
+    // 227 Phase 4 (D-3): the bounded ASK re-prompt budget is a PER-VISIT fact.
+    autoAskReprompt: undefined,
+    // 227 Phase 2 (D-7/D-8): cross-session hand-off markers belong to the doc
+    // that produced them — a new period must never inherit them.
+    autoJobStopPending: undefined,
+    designReviewEntryPending: undefined,
 
     // 210 Phase 0: per-period evidence snapshots. These fields are set
     // ONLY here (single construction point) — buildStartMeta / buildRestartMeta /

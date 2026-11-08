@@ -111,6 +111,56 @@ describe("createAgentSettled", () => {
     await rm(stageTmp, { recursive: true, force: true });
   });
 
+  // ── 227 Phase 4: bounded ASK re-prompt wiring ───────────────────────────────
+
+  it("a silent (no-advance) settle in an auto job delivers ONE bounded re-prompt", async () => {
+    const stageTmp = join(tmpdir(), "pi-agent-settled-ask-" + Date.now());
+    await mkdir(stageTmp, { recursive: true });
+    await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
+
+    await writeFile(join(stageTmp, "doc.md"), "some content");
+    const vrDir = join(stageTmp, "references", "develop_spec");
+    await mkdir(vrDir, { recursive: true });
+    await writeFile(
+      join(vrDir, "verify.md"),
+      "---\nrules:\n  fileContentPattern:\n    - path: \"doc.md\"\n      pattern: \"^NEVER_MATCH$\"\n---\nBody\n",
+    );
+
+    const config = makeTestConfig({
+      projectRoot: stageTmp,
+      stages: Object.fromEntries(
+        ["clarify", "plan", "design-review", "develop", "review", "fix", "awaiting_human", "completed"].map(
+          (s, i, a) => [
+            s,
+            {
+              agentPath: "a.md",
+              skillPath: "s.md",
+              nextStage: a[i + 1] ?? null,
+              requireDomain: false,
+              verify: s === "develop" ? { require: true, verifyFile: "references/develop_spec/verify.md" } : undefined,
+            },
+          ],
+        ),
+      ) as any,
+    });
+
+    const sent: string[] = [];
+    const meta = makeTestMeta({
+      currentStage: "develop",
+      autoJob: { jobId: "ask_loop", jobPath: "docs/jobs/ask_loop.yaml", docIndex: 0, totalDocs: 1 },
+    });
+    const ctx = createMockCtx(meta, { pi: { sendUserMessage: (msg: string) => sent.push(msg) } });
+
+    await createAgentSettled(config).handler(ctx as any);
+
+    // The settle did NOT advance, so the bounded owner re-prompt fires once.
+    expect(meta.currentStage).toBe("develop");
+    expect(meta.autoAskReprompt).toMatchObject({ stage: "develop", count: 1 });
+    expect(sent.filter((m) => m.includes("is unattended"))).toHaveLength(1);
+
+    await rm(stageTmp, { recursive: true, force: true });
+  });
+
   // ── Phase 3: frozen short-circuit ────────────────────────────────────────────
 
   it("skips verification when pipeline is frozen (flowState=blocked)", async () => {
