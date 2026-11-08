@@ -215,7 +215,7 @@ describe("Phase 4-2 (191): Authorization invalidation", () => {
   });
 
   describe("No authorization state", () => {
-    it("skip: handles missing designReview gracefully", async () => {
+    it("skip: refuses a bare skip INTO design-review (D-8) without crashing", async () => {
       const meta = makeTestMeta({
         flowState: "blocked",
         currentStage: "plan",
@@ -227,9 +227,13 @@ describe("Phase 4-2 (191): Authorization invalidation", () => {
 
       const result = await executeDecision(ctx, meta, "skip", config);
 
-      expect(result.success).toBe(true);
-      // Should not crash when no authorization exists
+      // 227 Phase 2: design-review can only be entered through the domain —
+      // "skip" must route the user to `choose stage "design-review"` instead.
+      expect(result.success).toBe(false);
+      expect(result.message).toContain("cannot enter design-review");
       expect(meta.designReview).toBeUndefined();
+      // Zero side effects: the stage never moved.
+      expect(meta.currentStage).toBe("plan");
     });
   });
 });

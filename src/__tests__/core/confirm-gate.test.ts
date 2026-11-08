@@ -157,6 +157,8 @@ describe("Phase 3 (162): maybeHandleConfirmGate", () => {
 
   it("approve advances plan to design-review", async () => {
     await createPlanDoc("# Plan\n");
+    // 227 Phase 2: the design-review entry authorises the domain.
+    await fs.writeFile(path.join(tmpDir, "docs", "design", "77_Config.md"), "# Requirement\n", "utf-8");
     const config = makePlanConfigWithConfirm(tmpDir, "manual");
     const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/77_Config.md" });
     const ctx = createMockCtx(meta, { selectReturn: "Approve & Advance" });

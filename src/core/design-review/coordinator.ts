@@ -136,6 +136,10 @@ import { parkExecutorFailure } from "../stage-executor/recovery";
 import { sendTrustedOwnerWake } from "../stage-executor/turn-source";
 import { safeWriteAuditLog } from "../../utils/auditLog";
 import { shouldEmitWithinWindow } from "../../utils/audit-throttle";
+// 227 Phase 2 (D-14): in an auto job `request-human` is never a menu.
+import { resolveAutoHumanFallback, applyAutoHumanFallback } from "./auto-human-fallback";
+// 227 Phase 2: the job onFail policy is read through the ONE active-job reader.
+import { readActiveJobContext } from "../auto-pipeline/config-overlay";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
@@ -697,6 +701,16 @@ async function handleReviewRunning(
     return await handleFail(ctx, meta, drState, outcome.reportHash, reportPath, outcome.issues);
   }
   if (route === "request-human") {
+    // 227 Phase 2 (D-14): an auto job has nobody to answer the menu. `manual`
+    // always stops; a smart FAIL follows the job's `onFail`; the human track
+    // keeps the existing menu verbatim (`null`).
+    const onFail = readActiveJobContext(ctx.config.projectRoot, docsDirsOf(ctx.config).jobsDir)
+      ?.job.designReview.onFail ?? "auto-revise";
+    const fallback = resolveAutoHumanFallback(meta, mode, onFail);
+    if (fallback === "stop") return await applyAutoHumanFallback(ctx, meta, "stop");
+    if (fallback === "revise-plan") {
+      return await handleFail(ctx, meta, drState, outcome.reportHash, reportPath, outcome.issues);
+    }
     return await handleHumanDecisionRequest(
       ctx,
       meta,

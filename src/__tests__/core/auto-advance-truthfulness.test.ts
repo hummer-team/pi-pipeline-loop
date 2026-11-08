@@ -32,7 +32,7 @@
 
 import { describe, it, expect } from "bun:test";
 import * as fs from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -121,7 +121,19 @@ async function makeCase(opts: {
 }): Promise<Case> {
   const root = join(tmpdir(), `pi-216-truth-${opts.label}-${Date.now()}-${seq}`);
   await mkdir(join(root, ".pi", "audit"), { recursive: true });
-  const config = makeTestConfig({ projectRoot: root });
+  // 227 Phase 2: entering design-review requires the requirement + plan docs.
+  await mkdir(join(root, "docs", "design"), { recursive: true });
+  await writeFile(join(root, "docs", "design", "77_Config.md"), "# Requirement\n", "utf-8");
+  await writeFile(join(root, "docs", "design", "77_Config_Plan.md"), "# Plan\n", "utf-8");
+  const baseConfig = makeTestConfig({ projectRoot: root });
+  // 227 Phase 2: the plan-confirm marker write must stay inside the write scope.
+  const config = {
+    ...baseConfig,
+    stages: {
+      ...baseConfig.stages,
+      plan: { ...baseConfig.stages.plan, allowedWritePaths: ["docs/"] },
+    },
+  } as typeof baseConfig;
   await initAuditLog(config);
   const pid = nextPid();
   seq++;
@@ -145,7 +157,13 @@ async function makeCase(opts: {
   const wakes: string[] = [];
   const ctx = {
     session,
-    ui: { notify: () => {}, setStatus: () => {}, select: async () => opts.selectReturn },
+    ui: {
+      notify: () => {},
+      setStatus: () => {},
+      select: async () => opts.selectReturn,
+      // 227 Phase 2: design-review entry authorisation needs a real UI pair.
+      confirm: async () => true,
+    },
     pi: { sendUserMessage: (msg: string) => { wakes.push(msg); } },
     config,
     _ctx: { sessionManager },
@@ -433,6 +451,7 @@ describe("216 P1: a refused exit keeps the confirm gate pending (R6-10)", () => 
       meta: (pid) => ({
         currentStage: stage,
         previousStage: stage === "plan" ? "clarify" : "develop",
+        requirementDoc: "docs/design/77_Config.md",
         stageExecutorRun: boundRun(pid, stage),
       }),
     });

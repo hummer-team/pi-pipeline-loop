@@ -43,6 +43,12 @@ export type AuthorisationGateResult =
  */
 export interface DesignReviewAuthOpts {
   autoPipeline?: { jobId: string };
+  /**
+   * 227 Phase 2 (D-8): where the authorisation came from. `auto` is recorded on
+   * the state (`DesignReviewAuthorizationSource`) so a job-driven domain can
+   * never be mistaken for a human one; the audit result is `authorised_auto`.
+   */
+  authorizationSource?: "direct-entry" | "auto";
 }
 
 /**
@@ -239,7 +245,7 @@ export async function designReviewAuthorisationGate(
 
   const newState = createInitialState(
     planDoc,
-    "direct-entry",
+    opts?.authorizationSource ?? "direct-entry",
     planHash,
     ownerSessionFile,
     {

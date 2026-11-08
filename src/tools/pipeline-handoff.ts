@@ -14,7 +14,7 @@ import { checkStageSummaryHash } from "../utils/summary-hash";
 import { buildOnStageChangedCallback } from "../commands/pipeline-start";
 import { effectiveMax } from "../utils/stage-visit";
 // 219 Phase 5 (Seam A): auto-aware visits (loop brake).
-import { recordAutoAwareStageVisit, finalizeOnSoftStop } from "../core/auto-pipeline/stop-policy";
+import { recordAutoAwareStageVisit, finalizeOnSoftStop, stopAutoDocOnHardFailure } from "../core/auto-pipeline/stop-policy";
 import { toProjectRelative } from "../utils/path-display";
 import { isDormant, DORMANT_NO_PIPELINE_MESSAGE } from "../core/dormancy";
 import { spawnStageSubagent } from "../utils/subagent-rpc";
@@ -31,6 +31,13 @@ import { checkRecheckForwardRelease } from "../core/design-review/flow-decision-
 import { gateStageToolCall } from "../core/stage-executor/tool-consumption";
 import { boundActiveRun, commitBoundStageExit } from "../core/stage-executor/transition-commit";
 import { computeResultKey } from "../core/stage-executor/run-state";
+// 227 Phase 2 (D-8): every design-review entry rides the domain seam.
+import {
+  authoriseDesignReviewEntry,
+  designReviewEntryPatch,
+  dispatchDesignReviewEntry,
+  type DesignReviewEntryAuth,
+} from "../core/design-review/entry-automation";
 
 /**
  * Creates the `pipeline_handoff` tool.
@@ -135,6 +142,7 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
       const nextStage = args.nextStage as PipelineStage;
       const note = (args.note as string) ?? "";
 
+
       // 193 Phase 3 (task 6): RECHECK barrier — after an upstream rollback
       // cleared the design-review state but left the recheck marker armed, a
       // handoff toward develop/review/fix/awaiting_human/completed is a
@@ -150,6 +158,17 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
           entry: "pipeline_handoff",
         }, "warn");
         return { success: false, error: recheck.reason, message: recheck.reason };
+      }
+
+      // 227 Phase 2 (D-8): leaving design-review requires the domain (a child
+      // deferral is completed by the owner first). `pipeline_handoff` is
+      // owner-only, so this is a correctness guard, not a role guard.
+      if (currentStage === "design-review" && !(ctx.session.getMeta()?.designReview)) {
+        return {
+          success: false,
+          error:
+            "design-review has no authorisation domain yet — the owner completes the pending entry on its next settle.",
+        };
       }
 
       // Precondition: current stage summary must be validated
@@ -217,6 +236,30 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
         // no-gate (confirm marker already present) → fall through to the normal handoff.
       }
 
+      // 227 Phase 2 (D-8): entering design-review authorises BEFORE the
+      // transition; the state (or the child deferral) rides the same commit.
+      let drEntry: DesignReviewEntryAuth | undefined;
+      if (nextStage === "design-review" && !(ctx.session.getMeta()?.designReview)) {
+        const freshForAuth = ctx.session.getMeta() ?? meta;
+        drEntry = await authoriseDesignReviewEntry({
+          ctx: ctx as unknown as Parameters<typeof authoriseDesignReviewEntry>[0]["ctx"],
+          config,
+          meta: freshForAuth,
+        });
+        if (drEntry.kind === "failed") {
+          if (freshForAuth.autoJob) {
+            await stopAutoDocOnHardFailure({
+              ctx,
+              config,
+              meta: freshForAuth,
+              reason: "design_review_entry_failed",
+              auditEvent: "design_review_auto_entry_failed",
+            });
+          }
+          return { success: false, error: drEntry.message, message: drEntry.message };
+        }
+      }
+
       // Cycle detection: unified via recordStageVisit helper (DRY with stage-advancer,
       // routeConfirmReject, verify-advance). Preserves original handoff semantics.
       const maxCycles = effectiveMax(meta, config);
@@ -260,6 +303,8 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
         // 216 P3: a real handoff transition clears the refusal counter too
         // (same migration semantics as verify-advance's transitionPatch).
         stageExitRefusal: undefined,
+        // 227 Phase 2 (D-8): domain state / owner hand-off commits atomically.
+        ...designReviewEntryPatch(drEntry, meta),
         contextFiles: {
           ...(freshForAnchor.contextFiles || {}),
           [nextStage]: [currentSummary.path],
@@ -315,6 +360,7 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
           currentStepIndex: 0,
           // 216 P3: not-bound branch — same migration clear as transitionPatch
           stageExitRefusal: undefined,
+          ...designReviewEntryPatch(drEntry, meta),
           contextFiles: {
             ...contextFiles,
             [nextStage]: [currentSummary.path],
@@ -341,8 +387,31 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
         ui.transition(ctx, currentStage, nextStage);
       }
 
+      // 227 Phase 2 (D-8): the design-review entry dispatches its own domain —
+      // never a second generic spawn for the same transition.
+      if (drEntry?.kind === "authorized") {
+        const dispatched = await dispatchDesignReviewEntry({
+          ctx: ctx as unknown as Parameters<typeof dispatchDesignReviewEntry>[0]["ctx"],
+          config,
+          meta: ctx.session.getMeta() ?? meta,
+          state: drEntry.state,
+        });
+        if (!dispatched.ok) {
+          await safeWriteAuditLog("design_review_dispatch_pending", {
+            pipelineId: meta.pipelineId ?? "unknown",
+            stage: "design-review",
+            message: dispatched.message,
+          }, "warn");
+        }
+      } else if (drEntry?.kind === "deferred") {
+        await safeWriteAuditLog("design_review_entry_deferred_to_owner", {
+          pipelineId: meta.pipelineId ?? "unknown",
+          fromStage: currentStage,
+        }, "warn");
+      }
+
       // Phase 1 (169): Spawn subagent for the target stage after handoff
-      if (nextStage !== "completed") {
+      if (nextStage !== "completed" && drEntry === undefined) {
         const freshMetaForSpawn = ctx.session.getMeta() as SessionMeta;
         const result = await spawnStageSubagent(
           (ctx as { pi?: unknown }).pi,

@@ -52,6 +52,18 @@ export async function createPlanDoc(content: string): Promise<string> {
   return planPath;
 }
 
+/**
+ * 227 Phase 2: entering design-review authorises the domain, which requires the
+ * REQUIREMENT document as well as the plan (`resolveDesignReviewEntryDocs`).
+ */
+export async function createRequirementDoc(content = "# Requirement\n"): Promise<string> {
+  const docsDir = path.join(tmpDir, "docs", "design");
+  await fs.mkdir(docsDir, { recursive: true });
+  const requirementPath = path.join(docsDir, "77_Config.md");
+  await fs.writeFile(requirementPath, content, "utf-8");
+  return requirementPath;
+}
+
 // ── Shared helper: createProductionSemanticsCtx ──────────────────────────────
 //
 // createMockCtx (helpers.ts) uses Object.assign(meta, patch) in updateMeta,

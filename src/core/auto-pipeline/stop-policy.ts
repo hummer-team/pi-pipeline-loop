@@ -27,6 +27,9 @@ import { writeJobState } from "./job-state";
 import { readActiveJobContext, readStateForActiveLock } from "./config-overlay";
 import { isUnresolvableFreeze } from "./freeze-autopilot";
 import { auditAutoDiagnostic } from "./diagnostics";
+import { safeWriteAuditLog } from "../../utils/auditLog";
+import { detectSessionRole } from "../session-role";
+import type { RuntimeCtx } from "../runtime-ctx";
 
 export type HardStopVerdict =
   | { kind: "continue" }
@@ -187,6 +190,182 @@ export async function finalizeOnSoftStop(
   }, "error");
   await finalize.finalizeCurrentDoc(ctx as never, config, { outcome: "failed", verdict, reason: stopReason });
   await finalize.finalizeJob(ctx as never, config, { stopReason });
+}
+
+/**
+ * 227 Phase 2 (D-7/D-12): the only failure-scheduling seam for every 227 hard
+ * stop. The verdict is ALWAYS `{ kind: "hard" }` — `onFailure` never rewrites a
+ * 227 stop.
+ *
+ * - owner: `readActiveJobContext` → `handleDocFailure` (single transaction);
+ *   no readable job context but a sidecar exists → `finalizeCurrentDoc` +
+ *   `finalizeJob`; no sidecar at all → nothing to stop (`no_auto_context`).
+ * - child: NEVER finalizes (the in-process lock is owner-only). The stop is
+ *   written into the SHARED meta (`autoJobStopPending`) and audited with
+ *   `result: forwarded_to_owner`; the owner consumes it on its next settle.
+ */
+export type AutoDocFailureStopReason =
+  | "design_review_entry_failed"
+  | "design_review_manual_fail"
+  | "ask_reprompt_exhausted"
+  | "completion_gate_unsatisfied";
+
+/** The reasons `consumeAutoStopPending` will accept from a forwarded record. */
+const FORWARDABLE_STOP_REASONS: readonly string[] = [
+  "design_review_entry_failed",
+  "design_review_manual_fail",
+  "ask_reprompt_exhausted",
+  "completion_gate_unsatisfied",
+];
+
+export async function stopAutoDocOnHardFailure(args: {
+  ctx: unknown;
+  config: PipelineConfig;
+  meta: SessionMeta;
+  reason: AutoDocFailureStopReason;
+  auditEvent: string;
+  /** Extra audit fields (all values are already `k=v` scalars). */
+  auditExtras?: Record<string, string>;
+}): Promise<"stopped" | "forwarded_to_owner" | "no_auto_context"> {
+  const { config, meta, reason, auditEvent } = args;
+  const verdict: HardStopVerdict = { kind: "hard", stopReason: reason };
+  const auditBase: Record<string, string> = {
+    pipelineId: meta.pipelineId ?? "",
+    stage: meta.currentStage ?? "",
+    reason,
+    ...(args.auditExtras ?? {}),
+  };
+
+  if (isChildContext(args.ctx)) {
+    writeStopPending(args.ctx, meta, reason);
+    await safeWriteAuditLog(auditEvent, { ...auditBase, result: "forwarded_to_owner" }, "warn");
+    return "forwarded_to_owner";
+  }
+
+  const active = readActiveJobContext(config.projectRoot, docsDirsOf(config).jobsDir);
+  if (active) {
+    const finalize = await import("./finalize");
+    await finalize.handleDocFailure(args.ctx as never, config, active.state, active.job, {
+      outcome: "failed",
+      reason,
+      verdict,
+    });
+    await safeWriteAuditLog(auditEvent, { ...auditBase, result: "stopped" }, "warn");
+    return "stopped";
+  }
+
+  const state = readStateForActiveLock(config.projectRoot);
+  if (!state) {
+    // Non-auto context: there is no document to receipt and no job to stop.
+    await safeWriteAuditLog(auditEvent, { ...auditBase, result: "no_auto_context" }, "warn");
+    return "no_auto_context";
+  }
+  const finalize = await import("./finalize");
+  auditAutoDiagnostic(
+    "auto_hard_stop_job_unreadable",
+    "Auto-job hard stop: job file unreadable — stopping the job.",
+    { jobId: state.jobId, stopReason: reason },
+    "error",
+  );
+  await finalize.finalizeCurrentDoc(args.ctx as never, config, { outcome: "failed", verdict, reason });
+  await finalize.finalizeJob(args.ctx as never, config, { stopReason: reason });
+  await safeWriteAuditLog(auditEvent, { ...auditBase, result: "stopped" }, "warn");
+  return "stopped";
+}
+
+/** Minimal structural view of the session adapter inside `ctx: unknown`. */
+interface StopCtxLike {
+  session?: {
+    getMeta?: () => SessionMeta | undefined;
+    updateMeta?: (patch: Partial<SessionMeta>) => unknown;
+  };
+  _ctx?: unknown;
+}
+
+function asStopCtx(ctx: unknown): StopCtxLike {
+  return typeof ctx === "object" && ctx !== null ? (ctx as StopCtxLike) : {};
+}
+
+function isChildContext(ctx: unknown): boolean {
+  try {
+    return detectSessionRole(ctx as RuntimeCtx).isChild;
+  } catch {
+    // Unreadable role evidence degrades to owner (the conservative default
+    // everywhere else in the plugin).
+    return false;
+  }
+}
+
+function writeStopPending(ctx: unknown, meta: SessionMeta, reason: string): void {
+  const session = asStopCtx(ctx).session;
+  if (!session?.updateMeta) return;
+  // The child's updateMeta dual-writes the owner's meta.json, so the owner sees
+  // this record on its next settle. No TTL: the owner attempts consumption on
+  // EVERY settle (same rule as `designReviewEntryPending`).
+  session.updateMeta({
+    autoJobStopPending: {
+      reason,
+      at: Date.now(),
+      ...(meta.pipelineId !== undefined ? { pipelineId: meta.pipelineId } : {}),
+    },
+  });
+}
+
+/**
+ * Owner settle: consume a child-forwarded stop BEFORE the ordinary seams.
+ *
+ * The marker is cleared FIRST (one read, one write) so a re-entrant settle can
+ * never apply the same transaction twice; the forwarded record must name this
+ * pipeline (a stale marker from another run is discarded and audited).
+ */
+export async function consumeAutoStopPending(
+  ctx: unknown,
+  config: PipelineConfig,
+  meta: SessionMeta,
+): Promise<boolean> {
+  if (isChildContext(ctx)) return false;
+  const session = asStopCtx(ctx).session;
+  const fresh = session?.getMeta?.() ?? meta;
+  const pending = fresh.autoJobStopPending;
+  if (!pending) return false;
+
+  session?.updateMeta?.({ autoJobStopPending: undefined });
+
+  if (
+    pending.pipelineId !== undefined
+    && fresh.pipelineId !== undefined
+    && pending.pipelineId !== fresh.pipelineId
+  ) {
+    await safeWriteAuditLog("auto_stop_pending_stale", {
+      pipelineId: fresh.pipelineId,
+      pendingPipelineId: pending.pipelineId,
+      reason: pending.reason,
+    }, "warn");
+    return false;
+  }
+  if (!FORWARDABLE_STOP_REASONS.includes(pending.reason)) {
+    await safeWriteAuditLog("auto_stop_pending_stale", {
+      pipelineId: fresh.pipelineId ?? "",
+      reason: pending.reason,
+      result: "unknown_reason",
+    }, "warn");
+    return false;
+  }
+
+  await safeWriteAuditLog("auto_stop_pending_consumed", {
+    pipelineId: fresh.pipelineId ?? "",
+    reason: pending.reason,
+    forwardedAt: String(pending.at),
+  }, "warn");
+
+  await stopAutoDocOnHardFailure({
+    ctx,
+    config,
+    meta: fresh,
+    reason: pending.reason as AutoDocFailureStopReason,
+    auditEvent: "auto_stop_pending_applied",
+  });
+  return true;
 }
 
 /**

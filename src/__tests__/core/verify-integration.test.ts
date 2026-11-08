@@ -580,7 +580,14 @@ describe("verify-integration", () => {
         "# Test Plan\n\n## Design\n\nSome plan content.\n\n## 用户确认\nUser has confirmed this plan.\n",
       );
 
-      const meta = makeTestMeta({ currentStage: "plan" });
+      // 227 Phase 2: entering design-review authorises the domain, which needs
+      // the requirement document and the `_Plan.md` derived from it.
+      await fs.writeFile(path.join(docsDir, "test.md"), "# Requirement\n");
+      await fs.writeFile(path.join(docsDir, "test_Plan.md"), "# Test Plan\n\n## 用户确认\n");
+      const meta = makeTestMeta({
+        currentStage: "plan",
+        requirementDoc: "docs/design/test.md",
+      });
       const ctx = createMockCtx(meta);
 
       const hook = createAgentSettled(config);

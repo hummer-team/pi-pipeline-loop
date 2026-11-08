@@ -538,11 +538,28 @@ export async function executeDecision(
         return { success: false, message: "Cannot skip: pipeline is not frozen." };
       }
 
+      const stageConfig = config.stages[meta.currentStage];
+      const toStage: PipelineStage = stageConfig?.nextStage ?? "completed";
+
+      // 227 Phase 2 (D-8): entering design-review must run the authorisation
+      // gate (which builds the domain). A bare skip would half-enter the stage,
+      // so it is refused BEFORE any invalidation/side effect.
+      if (toStage === "design-review") {
+        await safeWriteAuditLog("design_review_flow_decision_guard", {
+          pipelineId: meta.pipelineId,
+          stage: meta.currentStage,
+          decision: "skip",
+          code: "skip_into_design_review_refused",
+        }, "warn");
+        return {
+          success: false,
+          message: `"skip" cannot enter design-review — use choose stage "design-review" (it runs the authorisation gate).`,
+        };
+      }
+
       // Phase 4 (191): invalidate design-review authorization on skip
       await invalidateDesignReviewAuthorization(ctx, "decision_skip");
 
-      const stageConfig = config.stages[meta.currentStage];
-      const toStage: PipelineStage = stageConfig?.nextStage ?? "completed";
       const prevStage = meta.currentStage;
 
       const summariesPatch = meta.summaries[prevStage]

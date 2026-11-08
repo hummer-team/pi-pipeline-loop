@@ -1078,6 +1078,22 @@ export interface SessionMeta {
   };
 
   /**
+   * 227 Phase 2 (D-8): a CHILD deferred the design-review entry; the OWNER
+   * completes it on its next settle (`maybeEnterPendingDesignReview`). The child
+   * cannot authorise (the gate rejects children on both tracks), and the
+   * transition itself already committed — so the pending marker travels inside
+   * the SAME commit and the owner builds the domain afterwards.
+   */
+  designReviewEntryPending?: { at: number; pipelineId?: string };
+
+  /**
+   * 227 Phase 2 (D-7): a child forwarded a hard stop. The in-process lock is
+   * owner-only, so the child never finalizes — the owner performs the terminal
+   * transaction on its next settle (`consumeAutoStopPending`).
+   */
+  autoJobStopPending?: { reason: string; at: number; pipelineId?: string };
+
+  /**
    * 219 Phase 6: the interrupt-continuity verdict written by `session_start`
    * (`decideContinuity`). Read by the prompt injector to render the
    * "task continuity" section; `undefined` means "no interruption context".
@@ -1135,7 +1151,7 @@ export interface SessionMeta {
  * - "menu": User selected auto-review-plan from TUI menu
  * - "direct-entry": User explicitly chose design-review stage via choose_stage
  */
-export type DesignReviewAuthorizationSource = "menu" | "direct-entry";
+export type DesignReviewAuthorizationSource = "menu" | "direct-entry" | "auto";
 
 /**
  * Phase of the design-review lifecycle.

@@ -187,7 +187,12 @@ export type AutoJobStopReason =
   | "awaiting_human_in_auto"
   // 226 Phase 3: a soft `onFailure: stop` doc failure — the honest label
   // (the old misuse of `budget_exhausted` was only one possibility).
-  | "doc_failed";
+  | "doc_failed"
+  // 227 Phase 2/4/5: the 227 hard-stop family (see `stopAutoDocOnHardFailure`).
+  | "design_review_entry_failed"
+  | "design_review_manual_fail"
+  | "ask_reprompt_exhausted"
+  | "completion_gate_unsatisfied";
 
 /**
  * job state path: `<projectRoot>/.pi/auto_pipeline/{jobId}/state.json`.

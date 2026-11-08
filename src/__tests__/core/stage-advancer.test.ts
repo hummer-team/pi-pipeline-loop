@@ -1116,7 +1116,13 @@ describe("Phase 0 (169) P1: visitOrder + pipeline_completed audit sequence", () 
   });
 
   it("non-terminal advance: stageVisitOrder appended correctly", async () => {
-    const config = makeTestConfig();
+    // 227 Phase 2: entering design-review requires the domain (authorisation),
+    // which is out of scope for this accounting assertion — advance to develop.
+    const base = makeTestConfig();
+    const config = {
+      ...base,
+      stages: { ...base.stages, plan: { ...base.stages.plan, nextStage: "develop" as const } },
+    };
     const meta = makeTestMeta({
       currentStage: "plan",
       stageVisitOrder: ["clarify", "plan"],
@@ -1128,8 +1134,8 @@ describe("Phase 0 (169) P1: visitOrder + pipeline_completed audit sequence", () 
     const result = (await tool.execute({}, ctx as any)) as any;
 
     expect(result.success).toBe(true);
-    expect(meta.currentStage).toBe("design-review");
-    expect(meta.stageVisitOrder).toEqual(["clarify", "plan", "design-review"]);
+    expect(meta.currentStage).toBe("develop");
+    expect(meta.stageVisitOrder).toEqual(["clarify", "plan", "develop"]);
   });
 });
 
@@ -1537,6 +1543,9 @@ describe("Phase 1 / 180: confirm gate clears confirmGateDeferredAt", () => {
     await mkdir(join(stageTmp, "docs", "design"), { recursive: true });
     await initAuditLog(makeTestConfig({ projectRoot: stageTmp }));
     await writeFile(join(stageTmp, "docs", "design", "77_Config_plan.md"), "# Plan\n", "utf-8");
+    // 227 Phase 2: the design-review entry authorises the domain, which needs
+    // the requirement document + a confirm-capable UI.
+    await writeFile(join(stageTmp, "docs", "design", "77_Config.md"), "# Requirement\n", "utf-8");
     const config = makeManualPlanConfig(stageTmp);
     const meta = makeTestMeta({
       currentStage: "plan",
@@ -1553,6 +1562,7 @@ describe("Phase 1 / 180: confirm gate clears confirmGateDeferredAt", () => {
       ui: {
         notify: () => {},
         transition: () => {},
+        confirm: async () => true,
         select: async () => selectReturn,
       },
       pi: { sendUserMessage: () => {} },

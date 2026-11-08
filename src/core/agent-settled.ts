@@ -61,6 +61,10 @@ import { coordinateDesignReview } from "./design-review/coordinator";
 // 219 Phase 5 (Seam B): the settle-side auto transaction (completed wins over
 // hard stop) + the clarify marker degrade/fail channel.
 import { handleAutoSettle, handleAutoClarifyMarkerMiss } from "./auto-pipeline/settle-seam";
+// 227 Phase 2 (D-7/D-8): owner-side consumption of child-forwarded stops and
+// child-deferred design-review entries.
+import { consumeAutoStopPending } from "./auto-pipeline/stop-policy";
+import { maybeEnterPendingDesignReview } from "./design-review/entry-automation";
 import { runAutoClarifyRound } from "./auto-pipeline/clarify-entry";
 import { isAutoJobActive } from "./auto-pipeline/config-overlay";
 // 221 Phase 2: one-shot human completion release (settle-side fallback).
@@ -122,6 +126,12 @@ export function createAgentSettled(
       // 219 Phase 5 (Seam B): BEFORE the dormant guard — a completed document is
       // dormant, yet the auto job must finalize it exactly once (completed wins
       // over any hard-stop judgement inside the seam). Non-auto → no-op.
+      // 227 Phase 2 (D-7): a CHILD-forwarded hard stop is consumed first — it is
+      // the owner's terminal transaction and must win over ordinary seams.
+      if (rawMeta && (await consumeAutoStopPending(ctx, config, rawMeta))) return;
+      // 227 Phase 2 (D-8): complete a child-deferred design-review entry — the
+      // owner is the ONLY session that can authorise the domain.
+      if (rawMeta && (await maybeEnterPendingDesignReview(ctx, config, rawMeta))) return;
       if (rawMeta && (await handleAutoSettle(ctx, config, rawMeta))) return;
 
       // 221 Phase 2: a HUMAN pipeline that reached `completed` releases its

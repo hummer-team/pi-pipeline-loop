@@ -47,8 +47,15 @@ import { spawnStageSubagent, clearAllPendingSpawns } from "../utils/subagent-rpc
 // Phase 0 (182): dispatch stage executor after choose_stage from frozen menu
 import { buildOnStageChangedCallback } from "../commands/pipeline-start";
 // 219 Phase 5 (Seam A): auto-aware stage visits (loop brake).
-import { recordAutoAwareStageVisit, finalizeOnSoftStop } from "./auto-pipeline/stop-policy";
+import { recordAutoAwareStageVisit, finalizeOnSoftStop, stopAutoDocOnHardFailure } from "./auto-pipeline/stop-policy";
 import { describeEmptyOrInvalidRuleSet } from "../utils/guard-conflict-report";
+// 227 Phase 2 (D-8): every design-review entry rides the domain seam.
+import {
+  authoriseDesignReviewEntry,
+  designReviewEntryPatch,
+  dispatchDesignReviewEntry,
+  type DesignReviewEntryAuth,
+} from "./design-review/entry-automation";
 
 /**
  * Session context interface shared by hook and tool callers.
@@ -136,7 +143,10 @@ export type StageExitCaller = "auto_advance" | "fix_executor" | "confirm_approve
 export type StageExitBlockReason =
   | "recheck_blocked"
   | "budget_exceeded"
-  | `bound_exit_refused:${string}`;
+  | `bound_exit_refused:${string}`
+  // 227 Phase 2 (D-8): the design-review domain gates both directions.
+  | "design_review_entry_required"
+  | "design_review_entry_blocked";
 
 /** Options controlling applyVerifyPass behavior for different callers */
 interface ApplyVerifyPassOpts {
@@ -195,6 +205,12 @@ export interface VerifyPassReturn {
   verifyResult: { structured: { passed: boolean }; overallPassed: boolean } | null;
   /** 216 P1: present iff a PASSED verification failed to commit. */
   blockReason?: StageExitBlockReason;
+  /**
+   * 227 Phase 2 (D-8): the design-review entry was handled INSIDE this commit —
+   * `entered` (domain built + dispatched here) or `deferred` (child wrote the
+   * owner hand-off marker). The auto chain must not spawn afterwards.
+   */
+  domainEntry?: "entered" | "deferred";
 }
 
 /**
@@ -473,6 +489,63 @@ export async function applyVerifyPass(
     // Record stage visit via shared helper before updateMeta (DRY with handoff,
     // stage-advancer, routeConfirmReject). Max cycles from meta with default 3.
     const maxCycles = effectiveMax(meta, ctx.config);
+
+    // 227 Phase 2 (D-8): the domain is the ONLY authorization to leave
+    // design-review. A child-deferred entry must be completed by the owner
+    // first — a PASS may not silently release the loop.
+    const freshForDomain = ctx.session.getMeta() ?? meta;
+    if (stageName === "design-review" && !freshForDomain.designReview) {
+      await safeWriteAuditLog("design_review_entry_required_block", {
+        pipelineId: meta.pipelineId ?? "",
+        fromStage: stageName,
+        nextStage,
+        method: opts.method,
+      }, "warn");
+      if (opts.returnResult) {
+        return {
+          success: false,
+          passed: true,
+          message:
+            "design-review has no authorisation domain yet — the owner completes the pending entry on its next settle.",
+          verifyResult: verifyResult?.verifyResult ?? null,
+          blockReason: "design_review_entry_required",
+        };
+      }
+      return;
+    }
+
+    // 227 Phase 2 (D-8): entering design-review authorises BEFORE the
+    // transition; the state rides the SAME strict commit below.
+    let drEntry: DesignReviewEntryAuth | undefined;
+    if (nextStage === "design-review" && !freshForDomain.designReview) {
+      drEntry = await authoriseDesignReviewEntry({
+        ctx: ctx as unknown as Parameters<typeof authoriseDesignReviewEntry>[0]["ctx"],
+        config: ctx.config,
+        meta: freshForDomain,
+      });
+      if (drEntry.kind === "failed") {
+        if (freshForDomain.autoJob) {
+          await stopAutoDocOnHardFailure({
+            ctx,
+            config: ctx.config,
+            meta: freshForDomain,
+            reason: "design_review_entry_failed",
+            auditEvent: "design_review_auto_entry_failed",
+          });
+        }
+        if (opts.returnResult) {
+          return {
+            success: false,
+            passed: true,
+            message: drEntry.message,
+            verifyResult: verifyResult?.verifyResult ?? null,
+            blockReason: "design_review_entry_blocked",
+          };
+        }
+        return;
+      }
+    }
+
     // 219 Phase 5 (Seam A): a job-level loop brake is a SOFT stop of this doc.
     const autoVisit = recordAutoAwareStageVisit({ meta, nextStage, maxCycles, config: ctx.config });
     if (autoVisit.kind === "soft-stop") {
@@ -535,6 +608,9 @@ export async function applyVerifyPass(
       // counter must not leak into the next stage visit (same semantics as
       // verifyAttempts: 0 two lines above; R3-Q2-A single carrier).
       stageExitRefusal: undefined,
+      // 227 Phase 2 (D-8): the design-review domain state (or the child's
+      // owner hand-off marker) commits WITH the transition.
+      ...designReviewEntryPatch(drEntry, meta),
     };
 
     // 194 Phase 3 (C5): a bound stage exit is ONE strict commit — transition,
@@ -621,12 +697,36 @@ export async function applyVerifyPass(
     // TUI stage transition output (gated by output.pipelineStage)
     opts.ui?.transition(ctx, stageName, nextStage);
 
+    // 227 Phase 2 (D-8): after the commit + evidence, dispatch the domain
+    // EXACTLY once. A pending coordinator result is audited, never a failure.
+    if (drEntry?.kind === "authorized") {
+      const dispatched = await dispatchDesignReviewEntry({
+        ctx: ctx as unknown as Parameters<typeof dispatchDesignReviewEntry>[0]["ctx"],
+        config: ctx.config,
+        meta: ctx.session.getMeta() ?? meta,
+        state: drEntry.state,
+      });
+      if (!dispatched.ok) {
+        await writeAuditLog("design_review_dispatch_pending", {
+          pipelineId: meta.pipelineId ?? "",
+          stage: "design-review",
+          message: dispatched.message,
+        }, "warn");
+      }
+    } else if (drEntry?.kind === "deferred") {
+      await writeAuditLog("design_review_entry_deferred_to_owner", {
+        pipelineId: meta.pipelineId ?? "",
+        fromStage: stageName,
+      }, "warn");
+    }
+
     if (opts.returnResult) {
       return {
         success: true,
         passed: true,
         message: `Verification passed for "${stageName}". Advanced to "${nextStage}".`,
         verifyResult: verifyResult?.verifyResult ?? null,
+        ...(drEntry ? { domainEntry: drEntry.kind === "authorized" ? "entered" as const : "deferred" as const } : {}),
       };
     }
     return;
@@ -1164,6 +1264,19 @@ export async function autoAdvanceAfterVerify(
   // keeping synthetic contexts silent per the "no usage → no writes" rule).
   if (usageFields) {
     await writeStageAudit(config, "stage_usage", clearedMeta, usageFields);
+  }
+
+  // 227 Phase 2 (D-8): the design-review entry already dispatched the domain
+  // (or the child deferred it to the owner). Never spawn a second executor.
+  if (verdict.domainEntry !== undefined && toStage) {
+    await writeStageAudit(config, "stage_advance", clearedMeta, {
+      fromStage,
+      toStage,
+      method: "hook_auto_advance",
+      ...exitExtras,
+      domainEntry: verdict.domainEntry,
+    });
+    return { advanced: true };
   }
 
   // G6 (188): Spawn subagent BEFORE audit writes to close the race window where

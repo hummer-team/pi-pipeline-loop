@@ -12,6 +12,7 @@ import type { PipelineConfig } from "../../types";
 import {
   makePlanConfigWithConfirm,
   createPlanDoc,
+  createRequirementDoc,
   setupConfirmGateTmpDir,
   getTmpDir,
   createProductionSemanticsCtx,
@@ -399,6 +400,7 @@ describe("Phase 2 / 181: present-time pending re-stamp", () => {
 
   it("Approve clears deferral + reask and advances to design-review", async () => {
     await createPlanDoc("# Plan\n");
+    await createRequirementDoc();
     const tmpDir = getTmpDir();
     const config = makePlanConfigWithConfirm(tmpDir, "manual");
     const meta = makeTestMeta({
@@ -607,6 +609,7 @@ describe("G3 (188): narrow confirm gate defer to expected stage agent liveness",
 
   it("expected agent settled (no ledger evidence) → gate fires (present)", async () => {
     await createPlanDoc("# Plan\n");
+    await createRequirementDoc();
     const tmpDir = getTmpDir();
     const config = await makePlanConfigWithAgent(tmpDir);
 
@@ -675,6 +678,7 @@ describe("G3 (188): narrow confirm gate defer to expected stage agent liveness",
 
   it("unrelated agent live but expected agent settled → gate fires (narrow probe wins)", async () => {
     await createPlanDoc("# Plan\n");
+    await createRequirementDoc();
     const tmpDir = getTmpDir();
     const config = await makePlanConfigWithAgent(tmpDir);
 
@@ -702,6 +706,7 @@ describe("G3 (188): narrow confirm gate defer to expected stage agent liveness",
     // code must distinguish these cases and fall back to the global evidence
     // scan instead of immediately returning "present".
     await createPlanDoc("# Plan\n");
+    await createRequirementDoc();
     const tmpDir = getTmpDir();
     const config = await makePlanConfigWithAgent(tmpDir);
 

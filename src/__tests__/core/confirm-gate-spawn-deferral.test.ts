@@ -13,6 +13,7 @@ import type { SessionMeta, PipelineConfig } from "../../types";
 import {
   makePlanConfigWithConfirm,
   createPlanDoc,
+  createRequirementDoc,
   setupConfirmGateTmpDir,
   getTmpDir,
 } from "./confirm-gate-test-helpers";
@@ -32,6 +33,9 @@ describe("168 Phase 4: confirm gate spawn behavior", () => {
     await fs.mkdir(planDir, { recursive: true });
     const planDoc = path.join(planDir, "Test_Plan.md");
     await fs.writeFile(planDoc, "# Test Plan\n");
+    // 227 Phase 2: the design-review entry authorises the domain (needs the
+    // requirement document + a confirm-capable UI).
+    await fs.writeFile(path.join(planDir, "Test.md"), "# Requirement\n");
 
     // Create real agent file for design-review stage so resolveAgentMention succeeds
     const agentDir = path.join(stageTmp, "agents");
@@ -76,6 +80,7 @@ describe("168 Phase 4: confirm gate spawn behavior", () => {
         notify: () => {},
         transition: () => {},
         clearStage: () => {},
+        confirm: async () => true,
         select: async (_msg: string, _opts: string[]) => {
           selectCalls.push(_msg);
           return "Approve & Advance";
@@ -104,13 +109,17 @@ describe("168 Phase 4: confirm gate spawn behavior", () => {
     // Verify select was called (manual mode)
     expect(selectCalls.length).toBe(1);
 
-    // Since no event bus is on the pi mock, spawnStageSubagent should fall back to
-    // sendUserMessage with deliverAs:"followUp". Verify the spawn invocation.
-    const spawnCalls = sentMessages.filter(m => m.msg.includes("@design-review-agent"));
-    expect(spawnCalls.length).toBe(1);
-    expect(spawnCalls[0].opts).toEqual({ deliverAs: "followUp" });
-    expect(spawnCalls[0].msg).toContain("design-review");
-    expect(spawnCalls[0].msg).toContain("pipe-spawn-integ-001");
+    // 227 Phase 2 (D-8): the confirm approve path authorises the design-review
+    // DOMAIN — the executor dispatch is the coordinator's single dispatch, not
+    // a second generic `spawnStageSubagent`.
+    expect(meta.designReview?.authorizationSource).toBe("direct-entry");
+    expect(meta.designReviewEntryPending).toBeUndefined();
+    const auditContent = await fs.readFile(
+      auditLogFileFor(path.join(stageTmp, ".pi", "audit"), meta.pipelineId),
+      "utf-8",
+    );
+    expect(auditContent).toContain("design_review_authorisation_gate");
+    expect(auditContent).toContain("design_review_auto_entry");
 
     await fs.rm(stageTmp, { recursive: true, force: true });
   });
@@ -298,6 +307,7 @@ describe("Phase 4 / 179 (G5/G7): confirm gate deferral past subagent settle", ()
 
   it("anyTopLevelRunning()=false → popup presented", async () => {
     await createPlanDoc("# Plan\n");
+    await createRequirementDoc();
     const tmpDir = getTmpDir();
     const config = makePlanConfigWithConfirm(tmpDir, "manual");
     const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/77_Config.md" });
@@ -334,6 +344,7 @@ describe("Phase 4 / 179 (G5/G7): confirm gate deferral past subagent settle", ()
 
   it("deferral exceeds spawnWaitTimeoutMs → popup + timeout hint, stamp cleared", async () => {
     await createPlanDoc("# Plan\n");
+    await createRequirementDoc();
     const tmpDir = getTmpDir();
     const config = { ...makePlanConfigWithConfirm(tmpDir, "manual"), spawnWaitTimeoutMs: 1000 };
     // Phase 1 (180): the stamp must belong to the current visit (at >= stageStartTime)

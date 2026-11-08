@@ -82,6 +82,14 @@ import { createInitialState, computeHash } from "./design-review/state";
 import { armConfirmGateEscalation, clearConfirmGateEscalation } from "./confirm-gate-escalation";
 import { describeInvalidNextStage } from "../utils/guard-conflict-report";
 import { buildStageSequence } from "../utils/stage-sequence";
+// 227 Phase 2 (D-8): every design-review entry/exit rides the domain seam.
+import {
+  authoriseDesignReviewEntry,
+  designReviewEntryPatch,
+  dispatchDesignReviewEntry,
+  type DesignReviewEntryAuth,
+} from "./design-review/entry-automation";
+import { stopAutoDocOnHardFailure } from "./auto-pipeline/stop-policy";
 
 // ─── Confirm Gate Types (Phase 3 — 162) ──────────────────────────────────────
 
@@ -754,7 +762,10 @@ async function advanceConfirmApproved(
   // Cast ctx to match VerifyAdvanceCtx shape (compatible at runtime)
   const outcome = await autoAdvanceAfterVerify(
     config,
-    ctx as Parameters<typeof autoAdvanceAfterVerify>[1],
+    // 227 Phase 2: `VerifyAdvanceCtx.config` is a REQUIRED member (the entry
+    // authorisation reads it) — carry the caller's config explicitly instead of
+    // relying on the cast.
+    { ...ctx, config } as unknown as Parameters<typeof autoAdvanceAfterVerify>[1],
     meta,
     fromStage,
     toStage,
@@ -1374,27 +1385,22 @@ export async function maybeHandleConfirmGate(
       // Fix #1 (Round 4): Dispatch review agent via coordinator
       // Since dispatchAfterResume now skips design-review (N-3 fix),
       // we must explicitly call coordinator to dispatch the review agent
+      // 227 Phase 2 (D-8): the dispatch seam is shared with every other entry
+      // (`dispatchDesignReviewEntry`) — one dispatch, one audit, one watchdog.
       const freshMeta = ctx.session.getMeta();
       if (freshMeta) {
-        // 193 Phase 3 (task 1): ONE builder binds UI controls receiver-safe
-        // and records role evidence identically at every entry.
-        const coordinatorCtx = createDesignReviewRuntimeContext({
+        const dispatched = await dispatchDesignReviewEntry({
+          ctx: ctx as unknown as Parameters<typeof dispatchDesignReviewEntry>[0]["ctx"],
           config,
-          session: ctx.session,
-          interactionSource: "auto",
-          roleCtx: ctx,
-          rawUi: ctx.ui,
-          pi: ctx.pi,
-          // Pass through spawnOverride test hook if provided (for testability)
-          spawnOverride: ctx.spawnOverride,
+          meta: freshMeta,
+          state: initialState,
         });
-        const coordinatorResult = await coordinateDesignReview(coordinatorCtx, freshMeta, "advance");
-        
-        if (coordinatorResult.status === "handled" && coordinatorResult.action === "routed") {
-          ui.notify(ctx, `Design review agent dispatched successfully.`);
-        } else if (coordinatorResult.status === "handled" && coordinatorResult.action === "pending") {
-          ui.notify(ctx, `Design review dispatch pending: ${coordinatorResult.reason}`);
-        }
+        ui.notify(
+          ctx,
+          dispatched.ok
+            ? `Design review agent dispatched successfully.`
+            : `Design review dispatch pending: ${dispatched.message}`,
+        );
       }
       
       ui.notify(ctx, `Auto Review Plan authorised. Entering design-review stage.`);
@@ -1842,6 +1848,22 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
 
       const stageConfig = config.stages[currentStage];
 
+      // 227 Phase 2 (D-8): the domain is the ONLY authorization to leave
+      // design-review. A child-deferred entry must be completed by the owner
+      // first (its transition already happened, but no domain exists yet).
+      if (currentStage === "design-review" && !(ctx.session.getMeta()?.designReview)) {
+        await safeWriteStageAudit(config, "stage_advance_failed", meta, {
+          fromStage: "design-review",
+          reason: "design_review_entry_required",
+        }, "warn");
+        return {
+          success: false,
+          message:
+            "design-review has no authorisation domain yet — the owner completes the pending entry on its next settle.",
+          currentStage,
+        };
+      }
+
       // (b) Determine target stage: explicit arg overrides static config
       const argNextStage = typeof args.nextStage === "string" ? args.nextStage.trim() : "";
       const resolvedTarget = (argNextStage ? (argNextStage as PipelineStage) : stageConfig.nextStage);
@@ -2139,6 +2161,29 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       // (e) Advance to target stage
       // Record stage visit via shared helper (DRY with handoff, routeConfirmReject, verify-advance)
       const advanceTarget = resolvedTarget ?? "completed";
+
+      // 227 Phase 2 (D-8): design-review is DOMAIN-owned. Authorise BEFORE the
+      // transition and let the state ride the SAME strict commit — no entry can
+      // half-enter the stage, and a failed authorisation leaves meta untouched.
+      let drEntry: DesignReviewEntryAuth | undefined;
+      if (advanceTarget === "design-review" && !(ctx.session.getMeta()?.designReview)) {
+        const freshForAuth = ctx.session.getMeta() ?? meta;
+        drEntry = await authoriseDesignReviewEntry({ ctx, config, meta: freshForAuth });
+        if (drEntry.kind === "failed") {
+          if (freshForAuth.autoJob) {
+            await stopAutoDocOnHardFailure({
+              ctx,
+              config,
+              meta: freshForAuth,
+              reason: "design_review_entry_failed",
+              auditEvent: "design_review_auto_entry_failed",
+            });
+          }
+          return { success: false, message: drEntry.message, currentStage };
+        }
+      }
+      const skipSpawn = drEntry !== undefined;
+
       const maxCycles = effectiveMax(meta, config);
       // 219 Phase 5 (Seam A): a job-level loop brake is a SOFT stop of this doc.
       const autoVisit = recordAutoAwareStageVisit({ meta, nextStage: advanceTarget, maxCycles, config });
@@ -2194,6 +2239,9 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         advancedThisTurn: undefined,
         precheckBlocked: undefined, // 189 Bug 3: clear hard-stop flag on stage transition
         transientRetryCount: undefined, // 189 Bug 1: clear retry counter on stage transition
+        // 227 Phase 2 (D-8): the design-review domain state (or the child's
+        // owner hand-off marker) commits ATOMICALLY with the transition.
+        ...designReviewEntryPatch(drEntry, meta),
       };
       // 210 Phase 4: freeze the PRE-advance values BEFORE the commit below.
       // Production `getMeta` returns a snapshot, but mock/shared-store sessions
@@ -2236,6 +2284,28 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       // sees the final `usageByStage`) and render the exiting stage's
       // cumulative snapshot for the `stage_usage` audit.
       const usageFields = takeStageUsageAuditFields(ctx.session, meta.pipelineId, currentStage);
+
+      // 227 Phase 2 (D-8): the entry COMMITTED — dispatch the domain EXACTLY
+      // once. A `deferred` entry belongs to the owner's next settle; a pending
+      // coordinator result is audited, never treated as an entry failure.
+      if (drEntry?.kind === "authorized") {
+        const dispatched = await dispatchDesignReviewEntry({
+          ctx,
+          config,
+          meta: ctx.session.getMeta() ?? meta,
+          state: drEntry.state,
+        });
+        if (!dispatched.ok) {
+          await safeWriteStageAudit(config, "design_review_dispatch_pending", meta, {
+            stage: "design-review",
+            message: dispatched.message,
+          }, "warn");
+        }
+      } else if (drEntry?.kind === "deferred") {
+        await safeWriteStageAudit(config, "design_review_entry_deferred_to_owner", meta, {
+          fromStage: currentStage,
+        }, "warn");
+      }
 
       if (resolvedTarget === null || resolvedTarget === "completed") {
         ui.clearStage(ctx);
@@ -2284,17 +2354,19 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       // freshMetaForSpawn reads AFTER the clear above, so the subagent JOIN sees
       // advancedThisTurn=undefined (C2 safe — see reaudit Minor 2 alignment).
       const freshMetaForSpawn = ctx.session.getMeta() as SessionMeta;
-      const toolSpawnResult = await spawnStageSubagent(
-        (ctx as { pi?: unknown }).pi,
-        config,
-        resolvedTarget,
-        freshMetaForSpawn,
-        {
-          ui: { notify: (msg: string) => { ui.notify(ctx, msg); } },
-          session: ctx.session,
-          runtimeCtx: ctx,
-        },
-      );
+      const toolSpawnResult = skipSpawn
+        ? { spawned: false, fallback: false, deferred: false, dispatchOutcome: undefined }
+        : await spawnStageSubagent(
+            (ctx as { pi?: unknown }).pi,
+            config,
+            resolvedTarget,
+            freshMetaForSpawn,
+            {
+              ui: { notify: (msg: string) => { ui.notify(ctx, msg); } },
+              session: ctx.session,
+              runtimeCtx: ctx,
+            },
+          );
 
       // Success audit for non-terminal advance (after spawn to maintain ordering)
       // 210 Phase 4: persist the exited stage's stats first (post-advance meta as

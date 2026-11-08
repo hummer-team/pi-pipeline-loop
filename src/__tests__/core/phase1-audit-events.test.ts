@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect, beforeEach } from "bun:test";
-import { readFile, rm, mkdir } from "node:fs/promises";
+import { readFile, rm, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initAuditLog } from "../../utils/auditLog";
@@ -49,6 +49,10 @@ function createCtx(meta: any) {
     ui: {
       notify: () => {},
       setStatus: () => {},
+      // 227 Phase 2: the design-review entry authorises the domain (the gate
+      // requires a real interactive UI: select + confirm).
+      confirm: async () => true,
+      select: async () => "Approve & Advance",
     },
     _ctx: { sessionManager: { getBranch: () => [], getEntries: () => [] } },
     updates,
@@ -67,7 +71,11 @@ describe("Phase 1 audit: stage_advance events", () => {
 
   it("writes stage_advance on successful advance", async () => {
     const config = makeTestConfig({ projectRoot: root });
-    const meta = makeTestMeta({ currentStage: "plan" });
+    // 227 Phase 2: entering design-review needs the requirement + plan docs.
+    await mkdir(join(root, "docs", "design"), { recursive: true });
+    await writeFile(join(root, "docs", "design", "77_Config.md"), "# Requirement\n", "utf-8");
+    await writeFile(join(root, "docs", "design", "77_Config_Plan.md"), "# Plan\n", "utf-8");
+    const meta = makeTestMeta({ currentStage: "plan", requirementDoc: "docs/design/77_Config.md" });
     const ctx = createCtx(meta);
 
     const tool = createStageAdvancer(config);
