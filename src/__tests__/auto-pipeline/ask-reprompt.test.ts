@@ -9,17 +9,51 @@
  * - a new stage visit resets the budget;
  * - the child never reprompts; a missing `pi.sendUserMessage` fails open.
  */
-import { describe, it, expect, beforeEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   shouldReprompt,
   maybeAutoAskReprompt,
 } from "../../core/auto-pipeline/ask-reprompt";
+import { createJobState, writeJobState } from "../../core/auto-pipeline/job-state";
 import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
 import { makeTestMeta, createMockCtx } from "../helpers";
 import type { SessionMeta } from "../../types";
 
 const STAGE_START = 1_700_000_000_000;
 const VISITS = ["clarify", "plan", "develop"] as const;
+
+const JOB_ID = "ask_loop";
+const roots: string[] = [];
+
+/**
+ * A project whose SIDECAR names a RUNNING document for {@link JOB_ID}.
+ * `maybeAutoAskReprompt` judges liveness from this sidecar on every settle
+ * (227 review fix, issue 2), so delivery tests must model a live job.
+ */
+async function makeRunningJobRoot(opts?: { docStatus?: "running" | "completed" }): Promise<string> {
+  const root = mkdtempSync(join(tmpdir(), "pi-227-ask-reprompt-"));
+  roots.push(root);
+  const state = createJobState({
+    jobId: JOB_ID,
+    jobPath: "docs/jobs/ask_loop.yaml",
+    jobHash: "hash",
+    docs: [{ doc: "docs/design/227_Bug.md" }],
+  });
+  state.status = "running";
+  state.docs[0]!.status = opts?.docStatus ?? "running";
+  await writeJobState(root, state);
+  mkdirSync(join(root, ".pi", "auto_pipeline"), { recursive: true });
+  writeFileSync(
+    join(root, ".pi", "auto_pipeline", "lock.json"),
+    JSON.stringify({ token: "tok", jobId: JOB_ID, pid: process.pid, startedAt: Date.now() }),
+    "utf-8",
+  );
+  return root;
+}
+
 
 function autoMeta(overrides?: Partial<SessionMeta>): SessionMeta {
   return makeTestMeta({
@@ -41,6 +75,12 @@ beforeEach(() => {
     audits.push({ event, message: message as Record<string, string | boolean> | undefined });
   });
   return () => __setSafeWriteAuditLogOverride(null);
+});
+
+afterEach(() => {
+  while (roots.length > 0) {
+    rmSync(roots.pop()!, { recursive: true, force: true });
+  }
 });
 
 describe("227 P4: shouldReprompt trigger matrix", () => {
@@ -147,8 +187,15 @@ describe("227 P4: maybeAutoAskReprompt wiring", () => {
     const ctx = createMockCtx(meta, {
       pi: { sendUserMessage: (msg: string, opts?: Record<string, unknown>) => sent.push({ msg, opts }) },
     });
+    // 227 review fix (issue 2): liveness is judged from the sidecar, so the
+    // delivery path requires a RUNNING job/document.
+    const projectRoot = await makeRunningJobRoot();
 
-    await maybeAutoAskReprompt({ ctx: ctx as never, config: { stages: { develop: { nextStage: "review" } } } as never, before: BEFORE });
+    await maybeAutoAskReprompt({
+      ctx: ctx as never,
+      config: { stages: { develop: { nextStage: "review" } }, projectRoot } as never,
+      before: BEFORE,
+    });
 
     expect(sent).toHaveLength(1);
     expect(sent[0]!.opts).toEqual({ deliverAs: "followUp" });
@@ -175,8 +222,13 @@ describe("227 P4: maybeAutoAskReprompt wiring", () => {
   it("a missing sendUserMessage fails open with an error audit", async () => {
     const meta = autoMeta();
     const ctx = createMockCtx(meta);
+    const projectRoot = await makeRunningJobRoot();
 
-    await maybeAutoAskReprompt({ ctx: ctx as never, config: { stages: {} } as never, before: BEFORE });
+    await maybeAutoAskReprompt({
+      ctx: ctx as never,
+      config: { stages: {}, projectRoot } as never,
+      before: BEFORE,
+    });
 
     expect(meta.autoAskReprompt).toBeUndefined();
     expect(audits.some((a) => a.event === "auto_ask_reprompt_error")).toBe(true);
@@ -187,10 +239,11 @@ describe("227 P4: maybeAutoAskReprompt wiring", () => {
       autoAskReprompt: { stage: "develop", fingerprint: `${STAGE_START}:${VISITS.length}`, count: 3 },
     });
     const ctx = createMockCtx(meta);
+    const projectRoot = await makeRunningJobRoot();
 
     await maybeAutoAskReprompt({
       ctx: ctx as never,
-      config: { stages: {}, projectRoot: "/nonexistent-227-ask" } as never,
+      config: { stages: {}, projectRoot } as never,
       before: BEFORE,
     });
 
@@ -198,25 +251,52 @@ describe("227 P4: maybeAutoAskReprompt wiring", () => {
     expect(audits.some((a) => a.event === "auto_ask_reprompt")).toBe(false);
   });
 
-  it("227 review fix 1: a settle that finalized the job never re-prompts", async () => {
-    // The lock was held when the settle started but the sidecar/lock is gone
-    // now (hard stop / completion finalized the document) — stop-and-report
-    // must stay silent instead of restarting the stopped document.
+  it("227 review fix 1/2: a settle for an already-finalized job never re-prompts", async () => {
+    // The job legitimately ended before this settle (crash recovery, another
+    // terminal, a hard stop in an earlier turn): the sidecar is no longer
+    // `running` while `meta.autoJob` still exists until the next period.
     const meta = autoMeta();
     const sent: string[] = [];
     const ctx = createMockCtx(meta, {
       pi: { sendUserMessage: (msg: string) => sent.push(msg) },
     });
+    const projectRoot = await makeRunningJobRoot();
+    const state = createJobState({
+      jobId: JOB_ID,
+      jobPath: "docs/jobs/ask_loop.yaml",
+      jobHash: "hash",
+      docs: [{ doc: "docs/design/227_Bug.md" }],
+    });
+    state.status = "failed";
+    state.docs[0]!.status = "failed";
+    await writeJobState(projectRoot, state);
 
     await maybeAutoAskReprompt({
       ctx: ctx as never,
-      config: { stages: {}, projectRoot: "/nonexistent-227-ask" } as never,
+      config: { stages: {}, projectRoot } as never,
       before: BEFORE,
-      jobActiveAtEntry: true,
     });
 
     expect(sent).toHaveLength(0);
     expect(meta.autoAskReprompt).toBeUndefined();
+    expect(audits.some((a) => a.event === "auto_ask_reprompt_skipped")).toBe(true);
+  });
+
+  it("227 review fix 1/2: a job whose document is no longer running never re-prompts", async () => {
+    const meta = autoMeta();
+    const sent: string[] = [];
+    const ctx = createMockCtx(meta, {
+      pi: { sendUserMessage: (msg: string) => sent.push(msg) },
+    });
+    const projectRoot = await makeRunningJobRoot({ docStatus: "completed" });
+
+    await maybeAutoAskReprompt({
+      ctx: ctx as never,
+      config: { stages: {}, projectRoot } as never,
+      before: BEFORE,
+    });
+
+    expect(sent).toHaveLength(0);
     expect(audits.some((a) => a.event === "auto_ask_reprompt_skipped")).toBe(true);
   });
 });

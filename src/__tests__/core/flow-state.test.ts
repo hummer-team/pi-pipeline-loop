@@ -13,7 +13,7 @@ import {
 } from "../../core/flow-state";
 import type { FlowStateCtx } from "../../core/flow-state";
 import type { SessionMeta, PipelineConfig } from "../../types";
-import { makeTestMeta, makeTestConfig } from "../helpers";
+import { makeTestMeta, makeTestConfig, seedCompletionEvidence } from "../helpers";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -1308,14 +1308,17 @@ describe("markPipelineAborted terminal guard", () => {
 describe("Phase 4 (169) P1: W3 terminal compact wiring in executeDecision", () => {
   it("W3: skip to completed → maybeCompactOnPipelineCompleted is called", async () => {
     const config = makeTestConfig();
-    // Override review.nextStage → completed so skip reaches terminal
-    config.stages["review"] = { ...config.stages["review"], nextStage: "completed" as any };
+    // awaiting_human is a frozen point whose chain target is `completed`, so
+    // `skip` reaches the terminal stage (227 review fix: the completion gate
+    // runs first, hence the seeded evidence).
     const meta = makeTestMeta({
-      currentStage: "review",
-      flowState: "blocked",
-      blockedReason: "loop_overflow",
+      currentStage: "awaiting_human",
+      previousStage: "review",
+      stageVisitOrder: ["clarify", "plan", "develop", "review", "awaiting_human"],
+      requirementDoc: "docs/design/227_Bug.md",
       pipelineId: "pipe-w3-001",
     });
+    await seedCompletionEvidence(config, meta);
 
     let compactCalled = false;
     const ctx = {
@@ -1331,11 +1334,37 @@ describe("Phase 4 (169) P1: W3 terminal compact wiring in executeDecision", () =
       },
     };
 
-    await executeDecision(ctx as any, meta, "skip", config);
+    const result = await executeDecision(ctx as any, meta, "skip", config);
 
+    expect(result.success).toBe(true);
     expect(meta.currentStage).toBe("completed");
     // Helper was invoked: terminalCompact set or compact called
     expect(meta.terminalCompact !== undefined || compactCalled).toBe(true);
+  });
+
+  it("227 review fix 3: skip cannot write completed without the five evidence items", async () => {
+    const config = makeTestConfig();
+    config.stages["review"] = { ...config.stages["review"], nextStage: "completed" as any };
+    const meta = makeTestMeta({
+      currentStage: "review",
+      flowState: "blocked",
+      blockedReason: "loop_overflow",
+      stageVisitOrder: ["clarify", "plan", "develop", "review"],
+      requirementDoc: "docs/design/227_Bug.md",
+      pipelineId: "pipe-w3-gate",
+    });
+    // Every other evidence item is present — only the frozen (debt) state is
+    // left, which is exactly what a skip must NOT be able to launder into a
+    // terminal write.
+    await seedCompletionEvidence(config, meta);
+    const ctx = makeCtx(meta);
+
+    const result = await executeDecision(ctx, meta, "skip", config);
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("cannot complete");
+    expect(result.message).toContain("frozen pipeline");
+    expect(meta.currentStage).toBe("review");
   });
 
   it("W3: skip to non-completed → helper is NOT called", async () => {

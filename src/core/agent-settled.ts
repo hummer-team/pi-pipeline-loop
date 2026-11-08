@@ -118,11 +118,9 @@ export function createAgentSettled(
         stageStartTime: rawMeta?.stageStartTime ?? 0,
         visitCount: rawMeta?.stageVisitOrder?.length ?? 0,
       };
-      // 227 review fix (issue 1): capture the job-liveness fact BEFORE any seam
-      // runs. A lock held here but gone in the `finally` means THIS settle
-      // finalized the document/job — a re-prompt would restart a stopped doc.
-      const jobActiveAtEntry = isAutoJobActive();
-
+      // 227 review fix (issues 1/2): job liveness is NO LONGER sampled here —
+      // `maybeAutoAskReprompt` judges it against the sidecar on every settle, so
+      // a job that was already stopped before this turn stays silent too.
       // Phase 1 (197): refresh audit routing context on every hook entry
       setAuditPipelineContext(rawMeta?.pipelineId);
 
@@ -1252,13 +1250,12 @@ export function createAgentSettled(
       } finally {
         // 227 Phase 4 (D-3): bounded owner re-prompt for a silent settle. The
         // helper is fail-open (audited) and inert on the human track.
-        // 227 review fix (issue 1): `jobActiveAtEntry` makes a settle that
-        // finalized the job (hard stop / completion) non-repromptable.
+        // 227 review fix (issues 1/2): the helper judges job liveness from the
+        // sidecar on EVERY settle, so a stopped/finalized job never re-prompts.
         await maybeAutoAskReprompt({
           ctx: ctx as unknown as FinalizeCtx,
           config,
           before: repromptBefore,
-          jobActiveAtEntry,
         }).catch(async (err: unknown) => {
           await writeAuditLog("auto_ask_reprompt_error", {
             pipelineId: rawMeta?.pipelineId ?? "",

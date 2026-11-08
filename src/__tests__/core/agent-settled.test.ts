@@ -5,6 +5,7 @@ import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initAuditLog } from "../../utils/auditLog";
+import { createJobState, writeJobState } from "../../core/auto-pipeline/job-state";
 import { auditLogFileFor } from "../helpers";
 import type { PipelineStage, SessionMeta } from "../../types";
 
@@ -150,6 +151,24 @@ describe("createAgentSettled", () => {
       autoJob: { jobId: "ask_loop", jobPath: "docs/jobs/ask_loop.yaml", docIndex: 0, totalDocs: 1 },
     });
     const ctx = createMockCtx(meta, { pi: { sendUserMessage: (msg: string) => sent.push(msg) } });
+
+    // 227 review fix (issue 2): the re-prompt is delivered only while the
+    // SIDECAR still names this job's document as running.
+    const state = createJobState({
+      jobId: "ask_loop",
+      jobPath: "docs/jobs/ask_loop.yaml",
+      jobHash: "hash",
+      docs: [{ doc: "docs/design/227_Bug.md" }],
+    });
+    state.status = "running";
+    state.docs[0]!.status = "running";
+    await writeJobState(stageTmp, state);
+    await mkdir(join(stageTmp, ".pi", "auto_pipeline"), { recursive: true });
+    await writeFile(
+      join(stageTmp, ".pi", "auto_pipeline", "lock.json"),
+      JSON.stringify({ token: "tok", jobId: "ask_loop", pid: process.pid, startedAt: Date.now() }),
+      "utf-8",
+    );
 
     await createAgentSettled(config).handler(ctx as any);
 

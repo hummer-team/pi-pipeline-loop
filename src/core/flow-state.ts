@@ -13,7 +13,7 @@
  * converge on freezeAndPrompt, ensuring consistent state transitions and audit.
  */
 
-import type { PipelineConfig, SessionMeta, FlowState, PipelineStage, PipelineDecision } from "../types";
+import type { PipelineConfig, SessionMeta, FlowState, PipelineStage, PipelineDecision, ExecFn } from "../types";
 import { safeWriteAuditLog, prepareAuditPipelineLog } from "../utils/auditLog";
 import { effectiveMax, deriveReworkLoopGate, remainingRoundsOf } from "../utils/stage-visit";
 import { maybeCompactOnPipelineCompleted } from "./terminal-compact";
@@ -115,6 +115,31 @@ function buildRoleCtxForGate(ctx: FlowStateCtx): RuntimeCtx {
     ui: ctx.ui,
     session: ctx.session
   } as unknown as RuntimeCtx;
+}
+
+/**
+ * 227 review fix (issue 3): `executeDecision` has no exec parameter, but the
+ * completion gate reconciles fix commits through the DI shell. Every runtime
+ * context forwards the host API as `pi`, so the capability is resolved from
+ * `FlowStateCtx.pi` with the SAME wrapper the composition root uses for the
+ * tool layer. Absent `pi.exec` → undefined (the gate reports the gap instead
+ * of guessing).
+ */
+function resolveFlowExecFn(ctx: FlowStateCtx): ExecFn | undefined {
+  interface ExecCapablePi {
+    exec?: (
+      cmd: string,
+      args: string[],
+      opts?: { cwd?: string },
+    ) => Promise<{ stdout: string; stderr: string; code: number }>;
+  }
+  const pi = ctx.pi as ExecCapablePi | undefined;
+  const exec = pi?.exec;
+  if (typeof exec !== "function") return undefined;
+  return async (cmd, args, cwd) => {
+    const result = await exec(cmd, args, { cwd });
+    return { stdout: result.stdout, stderr: result.stderr, code: result.code };
+  };
 }
 
 // ─── Context Interface ──────────────────────────────────────────────────────
@@ -555,6 +580,30 @@ export async function executeDecision(
           success: false,
           message: `"skip" cannot enter design-review — use choose stage "design-review" (it runs the authorisation gate).`,
         };
+      }
+
+      // 227 Phase 5 (D-11/D-12) review fix (issue 3): the decision `skip` is a
+      // FOURTH `completed` write point (plan/decisionPolicy/configurable
+      // `nextStage`). It must pass the SAME five-evidence gate as stage_advance,
+      // verify forward and pipeline_handoff — otherwise a `skip` rule silently
+      // ends the pipeline without evidence. Unsatisfied ⇒ refuse (human) or
+      // hard stop (auto, executed inside the gate).
+      if (toStage === "completed") {
+        const { enforceCompletionGate } = await import("./auto-pipeline/completion-gate");
+        const execFn = resolveFlowExecFn(ctx);
+        const gate = await enforceCompletionGate({
+          config,
+          meta: (ctx.session.getMeta() as SessionMeta | undefined) ?? meta,
+          session: ctx.session,
+          ...(execFn ? { execFn } : {}),
+          runtimeCtx: buildRoleCtxForGate(ctx),
+        });
+        if (!gate.allowed) {
+          const frozenHint = meta.flowState === "blocked"
+            ? ' A frozen pipeline cannot be skipped into "completed" — resume or roll back first.'
+            : "";
+          return { success: false, message: `${gate.message}${frozenHint}` };
+        }
       }
 
       // Phase 4 (191): invalidate design-review authorization on skip

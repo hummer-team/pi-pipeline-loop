@@ -22,7 +22,8 @@ import { scanActiveSpawnEvidence } from "../../utils/spawn-evidence";
 import { resolveAgentMention } from "../../utils/subagent-rpc";
 import { safeWriteAuditLog } from "../../utils/auditLog";
 import { stopAutoDocOnHardFailure } from "./stop-policy";
-import { isAutoJobActive, readStateForActiveLock } from "./config-overlay";
+import { readStateForActiveLock } from "./config-overlay";
+import type { AutoJobState } from "./job-state";
 import type { FinalizeCtx } from "./finalize";
 
 /** Persisted budget fingerprint + counter (cleared with the meta period). */
@@ -102,20 +103,22 @@ function buildRepromptText(config: PipelineConfig, meta: SessionMeta): string {
 }
 
 /**
- * 227 review fix (issue 1): a settle that FINALIZED the document/job must never
- * be followed by a "keep going" prompt — that would restart a stopped document
- * after `finalizeJob` already released the lock and rolled back the overlay.
+ * 227 review fix (issues 1/2): a settle must never be followed by a "keep
+ * going" prompt when the job it belongs to is no longer running — that would
+ * restart a stopped document after `finalizeJob` already released the lock and
+ * rolled back the overlay.
  *
- * Liveness is judged from the authoritative sidecar: the process lock must
- * still be held, the sidecar must name the SAME job, the SAME document index
- * must still be the running one, and that document must still be `running`.
+ * Liveness is judged from the authoritative SIDECAR, not from the settle-time
+ * in-process snapshot: an owner settle can begin after the lock was released
+ * (crash recovery, another terminal, a resumed session), and `meta.autoJob`
+ * survives `finalizeJob`/`handleDocFailure` until the next meta period. The
+ * sidecar must exist, be `running`, name the SAME job, and the SAME document
+ * index must still be `running`.
  */
-function isSettledJobStillRunning(config: PipelineConfig, meta: SessionMeta): boolean {
-  if (!isAutoJobActive()) return false;
-  const state = readStateForActiveLock(config.projectRoot);
-  if (!state) return false;
+function sidecarShowsRunningJob(state: AutoJobState | null, meta: SessionMeta): boolean {
+  if (!state || state.status !== "running") return false;
   const jobId = meta.autoJob?.jobId;
-  if (jobId !== undefined && state.jobId !== jobId) return false;
+  if (!jobId || state.jobId !== jobId) return false;
   const docIndex = meta.autoJob?.docIndex;
   if (docIndex !== undefined && state.docIndex !== docIndex) return false;
   return state.docs[state.docIndex]?.status === "running";
@@ -129,28 +132,33 @@ export async function maybeAutoAskReprompt(args: {
   ctx: FinalizeCtx;
   config: PipelineConfig;
   before: { stage: PipelineStage; stageStartTime: number; visitCount: number };
-  /**
-   * 227 review fix (issue 1): the job lock was held when THIS settle started.
-   * When it is no longer held (or the document is no longer running), the
-   * settle itself finalized the job — nothing may be re-prompted.
-   */
-  jobActiveAtEntry?: boolean;
 }): Promise<void> {
-  const { ctx, config, before, jobActiveAtEntry } = args;
+  const { ctx, config, before } = args;
   const meta = ctx.session.getMeta();
   if (!meta) return;
   if (detectSessionRole(ctx as never).isChild) return;
 
-  // 227 review fix (issue 1): stop-and-report must stay silent. A hard stop
-  // inside this settle releases the lock / finalizes the document, so the
-  // re-prompt channel is closed BEFORE the silence heuristic is consulted.
-  if (jobActiveAtEntry === true && !isSettledJobStillRunning(config, meta)) {
-    await safeWriteAuditLog("auto_ask_reprompt_skipped", {
-      pipelineId: meta.pipelineId ?? "",
-      stage: meta.currentStage,
-      reason: "job_not_running",
-    });
-    return;
+  // 227 review fix (issues 1/2): stop-and-report must stay silent — judged
+  // against the SIDECAR on EVERY settle, never against a settle-time snapshot.
+  // A hard stop / finalize inside this settle (or a previous one) leaves
+  // `meta.autoJob` in place while the job is no longer running, and the
+  // re-prompt channel must already be closed.
+  if (meta.autoJob) {
+    const state = readStateForActiveLock(config.projectRoot);
+    if (!sidecarShowsRunningJob(state, meta)) {
+      // No sidecar at all = a session that merely CARRIES an `autoJob` block
+      // (220 INV-1: the human track stays byte-identical) — return silently.
+      // A sidecar that exists but is not running = a finalized/stopped job;
+      // audit it so stop-and-report remains observable.
+      if (state) {
+        await safeWriteAuditLog("auto_ask_reprompt_skipped", {
+          pipelineId: meta.pipelineId ?? "",
+          stage: meta.currentStage,
+          reason: "job_not_running",
+        });
+      }
+      return;
+    }
   }
 
   const decision = shouldReprompt({ meta, before, now: Date.now() });

@@ -206,11 +206,18 @@ export async function maybeEnterPendingDesignReview(
     await auditStale("pipeline_mismatch");
     return false;
   }
-  const sidecar = readStateForActiveLock(config.projectRoot);
-  if (!sidecar || sidecar.status !== "running") {
-    clearPending();
-    await auditStale("sidecar_not_running");
-    return false;
+  // 227 review fix (issue 1): the sidecar is an AUTO-track liveness probe only.
+  // A human-track pending marker has no auto job (no lock / sidecar), so
+  // requiring one here would clear EVERY human deferral and deadlock the
+  // pipeline — nobody would ever run the TUI authorisation. Human ⇒ fall
+  // through to the direct-entry gate below.
+  if (fresh.autoJob) {
+    const sidecar = readStateForActiveLock(config.projectRoot);
+    if (!sidecar || sidecar.status !== "running") {
+      clearPending();
+      await auditStale("sidecar_not_running");
+      return false;
+    }
   }
 
   const auth = await authoriseDesignReviewEntry({ ctx, config, meta: fresh });

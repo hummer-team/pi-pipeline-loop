@@ -42,6 +42,11 @@ async function makeEnv(opts: {
   planDoc?: boolean;
   requirementDoc?: boolean;
   currentStage?: "plan" | "design-review";
+  /**
+   * Whether to model a RUNNING auto job (sidecar + process lock). The human
+   * track has neither, so tests that pin the human deferral must turn this off.
+   */
+  withSidecar?: boolean;
 } = {}): Promise<Env> {
   const root = join(tmpdir(), `pi-227-dr-entry-${Date.now()}-${++seq}`);
   roots.push(root);
@@ -55,20 +60,22 @@ async function makeEnv(opts: {
   const config = makeTestConfig({ projectRoot: root });
   await initAuditLog(config);
 
-  // A RUNNING sidecar: the owner only completes a pending entry while the job
-  // is actually running (`readStateForActiveLock`).
-  const jobId = "entry_loop";
-  const state = createJobState({
-    jobId,
-    jobPath: "docs/jobs/entry_loop.yaml",
-    jobHash: "hash",
-    docs: [{ doc: "docs/design/227_Bug.md" }],
-  });
-  state.status = "running";
-  await writeJobState(root, state);
-  const lockPath = join(root, ".pi", "auto_pipeline", "lock.json");
-  await mkdir(join(root, ".pi", "auto_pipeline"), { recursive: true });
-  writeFileSync(lockPath, JSON.stringify({ token: "tok", jobId, pid: process.pid, startedAt: Date.now() }), "utf-8");
+  // A RUNNING sidecar: the owner only completes a pending AUTO entry while the
+  // job is actually running (`readStateForActiveLock`).
+  if (opts.withSidecar !== false) {
+    const jobId = "entry_loop";
+    const state = createJobState({
+      jobId,
+      jobPath: "docs/jobs/entry_loop.yaml",
+      jobHash: "hash",
+      docs: [{ doc: "docs/design/227_Bug.md" }],
+    });
+    state.status = "running";
+    await writeJobState(root, state);
+    const lockPath = join(root, ".pi", "auto_pipeline", "lock.json");
+    await mkdir(join(root, ".pi", "auto_pipeline"), { recursive: true });
+    writeFileSync(lockPath, JSON.stringify({ token: "tok", jobId, pid: process.pid, startedAt: Date.now() }), "utf-8");
+  }
 
   const meta = makeTestMeta({
     currentStage: opts.currentStage ?? "plan",
@@ -190,6 +197,28 @@ describe("227 P2: owner completes a child-deferred entry", () => {
 
     expect(handled).toBe(true);
     expect(child.meta.designReview?.authorizationSource).toBe("auto");
+    expect(child.meta.designReviewEntryPending).toBeUndefined();
+  });
+
+  it("227 review fix 1: human track — child writes pending → owner builds the domain without a sidecar", async () => {
+    // The human track has NO auto job: no sidecar, no lock. Requiring a running
+    // sidecar here used to clear the marker on every owner settle, so nobody
+    // ever ran the TUI authorisation and the pipeline deadlocked.
+    const child = await makeEnv({ child: true, withSidecar: false });
+    const deferred = await authoriseDesignReviewEntry({
+      ctx: child.ctx as never,
+      config: child.config,
+      meta: child.meta,
+    });
+    expect(deferred).toEqual({ kind: "deferred" });
+    child.ctx.session.updateMeta(designReviewEntryPatch(deferred, child.meta));
+    child.ctx.session.updateMeta({ currentStage: "design-review" });
+
+    const ownerCtx = createMockCtx(child.meta);
+    const handled = await maybeEnterPendingDesignReview(ownerCtx as never, child.config, child.meta);
+
+    expect(handled).toBe(true);
+    expect(child.meta.designReview?.authorizationSource).toBe("direct-entry");
     expect(child.meta.designReviewEntryPending).toBeUndefined();
   });
 
