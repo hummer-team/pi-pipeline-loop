@@ -106,6 +106,40 @@ describe("allocateReviewRound — four rules", () => {
   });
 });
 
+describe("allocateReviewRound — explicit re-entry reason (227 review round 4 issue 1)", () => {
+  it("reenter inside a /pipeline-start resumed period still advances the round and refreshes enteredAt", () => {
+    const meta = metaWith({
+      stageStartTime: 9000,
+      periodResumedAt: 8000,
+      reviewRound: round1(7000, 6000),
+    });
+    // Rule 3 would continue the round (index 1 / enteredAt 6000) for a normal
+    // dispatch; an explicit re-entry must NOT inherit that continuity.
+    expect(allocateReviewRound(meta, 9500).index).toBe(1);
+    const reentered = allocateReviewRound(meta, 9500, "reenter");
+    expect(reentered.index).toBe(2);
+    expect(reentered.enteredAt).toBe(9500); // every earlier report is stale now
+    expect(reentered.stageStartTime).toBe(9000);
+  });
+
+  it("reenter on a same-millisecond clock collision still advances (never reuses verbatim)", () => {
+    const meta = metaWith({ stageStartTime: 5000, reviewRound: round1(5000, 4000) });
+    expect(allocateReviewRound(meta, 5000).enteredAt).toBe(4000); // rule 2 reuse
+    const reentered = allocateReviewRound(meta, 5000, "reenter");
+    expect(reentered.index).toBe(2);
+    expect(reentered.enteredAt).toBe(5000);
+    expect(reentered.stageStartTime).toBe(5000);
+  });
+
+  it("reenter keeps the foreign-pipeline reset (round 1)", () => {
+    const meta = metaWith({ stageStartTime: 9000 });
+    meta.reviewRound = { index: 3, stageStartTime: 5000, enteredAt: 4000, pipelineId: "other-pipe" };
+    const reentered = allocateReviewRound(meta, 9500, "reenter");
+    expect(reentered.index).toBe(1);
+    expect(reentered.pipelineId).toBe("pipe-test-001");
+  });
+});
+
 describe("ensureReviewRound — persistence semantics", () => {
   it("persists the first allocation and audits review_round_allocated with isNew=true", () => {
     installAuditCapture();
@@ -164,5 +198,22 @@ describe("ensureReviewRound — persistence semantics", () => {
     const round = ensureReviewRound(meta, undefined, 2000);
     expect(round.index).toBe(1);
     expect(meta.reviewRound).toBeUndefined();
+  });
+
+  it("reason `reenter` persists the advanced round and audits isNew=true", () => {
+    installAuditCapture();
+    const meta = metaWith({
+      stageStartTime: 9000,
+      periodResumedAt: 8000,
+      reviewRound: round1(7000, 6000),
+    });
+    const session = { updateMeta: (patch: Partial<SessionMeta>) => { Object.assign(meta, patch); return true; } };
+    const next = ensureReviewRound(meta, session, 9500, "reenter");
+    expect(next.index).toBe(2);
+    expect(meta.reviewRound?.index).toBe(2);
+    expect(meta.reviewRound?.enteredAt).toBe(9500);
+    const audit = audits.find((a) => a.event === "review_round_allocated");
+    expect(audit?.fields.isNew).toBe("true");
+    expect(audit?.fields.index).toBe("2");
   });
 });

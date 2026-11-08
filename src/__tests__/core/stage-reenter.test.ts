@@ -19,6 +19,7 @@ import { createStageAdvancer } from "../../core/stage-advancer";
 import { evaluateCompletionGate } from "../../core/auto-pipeline/completion-gate";
 import { initAuditLog } from "../../utils/auditLog";
 import { makeTestConfig, makeTestMeta, createMockCtx, auditLogFileFor, seedReviewPassEvidence } from "../helpers";
+import { codeReviewDocFileName, docsDirsOf, reqBaseFromRequirementDoc } from "../../docs-paths";
 import type { PipelineConfig, SessionMeta } from "../../types";
 
 let seq = 0;
@@ -183,5 +184,88 @@ describe("227 review fix 2: re-enter at review rebinds the review ROUND", () => 
       session: env.ctx.session as never,
     });
     expect(gate.ok).toBe(true);
+  });
+});
+
+describe("227 review fix (round 4, issue 1): re-enter inside a resumed period is a NEW visit", () => {
+  it("a PASS report written before the re-entry can no longer satisfy the completion gate", async () => {
+    const env = await makeEnv();
+    env.meta.currentStage = "review";
+    env.meta.requirementDoc = "docs/design/227_Bug.md";
+    env.meta.stageVisitOrder = ["clarify", "plan", "develop", "review"];
+
+    // `/pipeline-start` resume: `periodResumedAt` is stamped and the visit clock
+    // is re-pointed to "now", while the recorded round still predates the marker
+    // (review-round rule 3 territory).
+    const resumedAt = Date.now() - 5_000;
+    env.meta.periodResumedAt = resumedAt;
+    env.meta.stageStartTime = resumedAt;
+    env.meta.reviewRound = {
+      index: 2,
+      stageStartTime: resumedAt - 60_000,
+      enteredAt: resumedAt - 60_000,
+      pipelineId: env.meta.pipelineId ?? "pipe",
+    };
+    const reviewDir = join(env.root, docsDirsOf(env.config).reviewDir);
+    // Seeds the PASS report of round 2 (`Code_Review_227_Bug_Develop_Commit_2.md`)
+    // plus the verdict spec, and models the resume rebind of the round.
+    await seedReviewPassEvidence(env.config, env.meta);
+
+    const gateBefore = await evaluateCompletionGate({
+      config: env.config,
+      meta: env.meta,
+      session: env.ctx.session as never,
+    });
+    expect(gateBefore.ok).toBe(true);
+
+    const result = (await createStageAdvancer(env.config).execute(
+      { reenter: true },
+      env.ctx as never,
+    )) as { success?: boolean; message?: string };
+    expect(result.success).toBe(true);
+
+    // The explicit re-entry is a NEW visit: the round advances and the
+    // freshness baseline moves to the re-entry clock.
+    expect(env.meta.reviewRound?.index).toBe(3);
+    expect(env.meta.reviewRound?.enteredAt).toBe(env.meta.stageStartTime);
+    expect(env.meta.reviewRound?.enteredAt).toBeGreaterThan(resumedAt);
+    expect(env.meta.reviewRound?.stageStartTime).toBe(env.meta.stageStartTime);
+
+    // The pre-re-entry PASS report must NOT count for the new visit.
+    const gateAfterReenter = await evaluateCompletionGate({
+      config: env.config,
+      meta: env.meta,
+      session: env.ctx.session as never,
+    });
+    expect(gateAfterReenter.ok).toBe(false);
+    if (!gateAfterReenter.ok) {
+      expect(gateAfterReenter.failure.code).toBe("review_not_passed");
+    }
+
+    // Only a report regenerated for the NEW round lets the gate pass again.
+    const passContent = "# Code Review\n\n## Verdict\n\n**Verdict: PASS**\n";
+    const newReportPath = join(
+      reviewDir,
+      codeReviewDocFileName(reqBaseFromRequirementDoc(env.meta.requirementDoc ?? ""), 3),
+    );
+    await writeFile(newReportPath, passContent, "utf-8");
+    const summaryContent = "---\n{}\n---\n# review\n";
+    const summaryPath = join(env.root, "docs", "design", "227_review_summary.md");
+    await writeFile(summaryPath, summaryContent, "utf-8");
+    env.meta.summaries = {
+      ...(env.meta.summaries ?? {}),
+      review: {
+        path: summaryPath,
+        hash: crypto.createHash("sha256").update(summaryContent).digest("hex"),
+        status: "valid",
+      },
+    };
+
+    const gateAfterFreshReport = await evaluateCompletionGate({
+      config: env.config,
+      meta: env.meta,
+      session: env.ctx.session as never,
+    });
+    expect(gateAfterFreshReport.ok).toBe(true);
   });
 });

@@ -1851,11 +1851,16 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         // round left a re-entered review permanently rejected. Rebinding through
         // the shared allocator keeps the round monotonic (rule 4: a genuinely
         // new visit advances the index) and the `review_round_allocated` audit.
+        // 227 review fix (issue 1, round 4): `reenter` MUST be a genuinely new
+        // visit — inside a `/pipeline-start` resumed period the resume-continuity
+        // rule would otherwise keep the old `index`/`enteredAt`, so a PASS report
+        // written before the re-entry could still satisfy the freshness baseline.
         if (currentStage === "review") {
           ensureReviewRound(
             { ...meta, stageStartTime: nextStageStart, summaries: restSummaries },
             ctx.session,
             nextStageStart,
+            "reenter",
           );
         }
         await safeWriteStageAudit(config, "stage_reenter", meta, { stage: currentStage });
