@@ -44,7 +44,7 @@ import { consumeDesignReviewResult, type DesignReviewConsumeCtx } from "./design
 // 194 Phase 3 (C3, task 2): child-side executor binding record after JOIN
 import { recordChildBindingFromRuntimeEvidence } from "./stage-executor/runtime-binding";
 // 219 Phase 2: auto-job config overlay replay gate (four states, plan §3-a)
-import { replayOverlayForSessionStart } from "./auto-pipeline/config-overlay";
+import { replayOverlayForChildSessionStart, replayOverlayForSessionStart } from "./auto-pipeline/config-overlay";
 // 219 Phase 6: interrupt-continuity hard judgement (`meta.continuity`).
 import { decideContinuity } from "./auto-pipeline/continuity";
 // Review round 2 (issue 2): a sidecar only counts when it belongs to THIS session.
@@ -708,6 +708,14 @@ export function createSessionStarter(config: PipelineConfig): Hook<"session_star
             if (parentSession) {
               recordChildExecutorBinding(ctx, parentSession, sessionFile);
             }
+            // 227 Phase 1 (D-6): JOIN is what INHERITS `meta.autoJob` — the
+            // snapshot taken at handler entry predates it, so the inherited meta
+            // is re-read here and the running job's overlay is adopted READ-ONLY.
+            await replayOverlayForChildSessionStart(
+              config,
+              ctx.session.getMeta() as SessionMeta,
+              (message) => ui.notify(ctx, message),
+            );
             return; // JOIN succeeded — child inherits parent pipeline
           }
           // JOIN failed (L3 no_evidence / meta read fail) — fall through to dormant

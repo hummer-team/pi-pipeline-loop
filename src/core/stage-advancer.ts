@@ -956,6 +956,11 @@ export async function maybeHandleConfirmGate(
   const currentStage = meta.currentStage;
   const stageConfig = config.stages[currentStage];
 
+  // 227 Phase 1 (D-7): an auto-job CHILD never evaluates a gate — the owner
+  // alone decides. Zero side effects: no deferral stamp, no re-ask count, no
+  // marker write, no dialog.
+  if (isChild && meta.autoJob) return { result: "no-gate" };
+
   // Precondition: only plan and review stages support confirm gate
   if (currentStage !== "plan" && currentStage !== "review") {
     // Phase 1 / 181: child sessions are read-only — never clear the owner's

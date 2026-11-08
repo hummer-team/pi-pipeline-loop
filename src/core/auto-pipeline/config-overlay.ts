@@ -48,7 +48,7 @@ import * as fs from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import * as pathMod from "node:path";
 import { randomUUID } from "node:crypto";
-import type { PipelineConfig, PipelineJsonConfig, PipelineStage } from "../../types";
+import type { PipelineConfig, PipelineJsonConfig, PipelineStage, SessionMeta } from "../../types";
 import { AUTO_PIPELINE_LOCK_FILE, CONFIG_DIR_NAME, DEFAULT_JOBS_DIR } from "../../constants";
 import { safeWriteAuditLog } from "../../utils/auditLog";
 import { resolvePipelineConfig } from "../json-config-loader";
@@ -469,6 +469,11 @@ export function applyOverlay(
     before[entry.configPath] = deepCopy(readConfigPath(liveView, entry.configPath));
     const resolvedValue = resolved ? readConfigPath(resolvedView, entry.configPath) : undefined;
     const value = entry.to === undefined ? undefined : resolvedValue ?? entry.to;
+    // 227 Phase 1: the snapshot records the RESOLVED value. A child session
+    // replays `entry.to` verbatim, so a resolve-time rewrite (e.g. a disabled
+    // stage reconnected to another successor) must be baked in here or the
+    // owner and the child would run different topologies.
+    if (entry.to !== undefined) entry.to = value;
     setLiveConfigPath(liveConfig, entry.configPath, value);
   }
   // 225 Phase 4 (T3): attribution record — which config paths THIS live auto
@@ -796,6 +801,66 @@ export function shouldRestoreOnShutdown(
 // ─── Session-start replay gate (session-starter wiring helper) ──────────────
 
 /**
+ * Read the tracked job file's raw bytes through the CONFIGURED jobs directory.
+ * Shared by the owner replay and the child replay so job-path resolution cannot
+ * diverge between the two seams.
+ */
+async function readTrackedJobBytes(
+  config: PipelineConfig,
+  jobId: string,
+  state: AutoJobState,
+): Promise<string> {
+  const jobsDir = docsDirsOf(config).jobsDir;
+  return fsPromises.readFile(
+    resolveTrackedJobFile(config.projectRoot, jobsDir, jobId, state.jobPath),
+    "utf8",
+  );
+}
+
+/**
+ * D-6: a CHILD session adopts the RUNNING job's overlay READ-ONLY.
+ *
+ * Identity = the inherited `meta.autoJob.jobId` equals the single running job.
+ * Never acquires the lock, never writes the sidecar, never flips another job's
+ * semantics (hash drift ⇒ no adoption + `job_drift` wording). Without this a
+ * child session started with the on-disk `manual` modes while the owner ran the
+ * job's auto matrix.
+ */
+export async function replayOverlayForChildSessionStart(
+  config: PipelineConfig,
+  meta: SessionMeta | null | undefined,
+  notify: (message: string) => void,
+): Promise<void> {
+  const jobId = meta?.autoJob?.jobId;
+  if (!jobId) return;
+  const state = readStateForActiveLock(config.projectRoot);
+  if (!state || state.status !== "running" || state.jobId !== jobId) return;
+  const snap = state.overlaySnapshot;
+  if (!snap || snap.entries.length === 0) return;
+
+  const raw = await readTrackedJobBytes(config, jobId, state).catch(() => null);
+  if (raw === null || hashJobBytes(raw) !== state.jobHash) {
+    await safeWriteAuditLog("pipeline_auto_overlay_replay_child", {
+      jobId,
+      result: "skipped_job_drift",
+    }, "warn");
+    notify(`Auto job "${jobId}" file changed since the run started — child overlay not applied.`);
+    return;
+  }
+
+  // Read-only adoption: only the recorded values are stamped onto the live
+  // config. No `before` capture, no sidecar write, no lock acquisition.
+  for (const entry of snap.entries) setLiveConfigPath(config, entry.configPath, entry.to);
+  config.configOverlayKeys = [...new Set(snap.entries.map((e) => e.configPath))];
+  await safeWriteAuditLog("pipeline_auto_overlay_replay_child", {
+    jobId,
+    result: "applied",
+    entries: String(snap.entries.length),
+    mode: "read_only",
+  });
+}
+
+/**
  * `session_start` overlay replay, gated by the plan §3(a) four states:
  * 1. exactly one running job AND (no lock OR dead lock pid) → verify the
  *    job-file hash → `applyOverlay` + audit `pipeline_auto_overlay_replay`;
@@ -842,13 +907,9 @@ export async function replayOverlayForSessionStart(
   // State 1 / 4: lock absent or holder dead. Verify hash before replaying.
   // 222 Phase 4: read through the configured jobs directory (same resolver as
   // every other auto seam) so a moved job directory still replays.
-  const jobsDir = docsDirsOf(config).jobsDir;
   let raw: string;
   try {
-    raw = await fsPromises.readFile(
-      resolveTrackedJobFile(projectRoot, jobsDir, jobId, state.jobPath),
-      "utf8",
-    );
+    raw = await readTrackedJobBytes(config, jobId, state);
   } catch (err) {
     auditAutoDiagnostic("replay_job_file_unreadable", "Auto-job file unreadable at session start — no overlay replay.", {
       jobId,
@@ -911,6 +972,17 @@ export async function replayOverlayForSessionStart(
     jobId,
     jobPath: state.jobPath,
   }, existing);
+
+  // D-13 hard rule 4: a deliberate branch removal must be visible on the replay
+  // path too (`applyOverlay` itself stays a pure write seam).
+  const disabledEntry = snapshot.entries.find((e) => e.configPath === "stages.plan.nextStage");
+  if (parsed.job.designReview.enabled === false && disabledEntry) {
+    await safeWriteAuditLog("design_review_disabled_by_job", {
+      jobId,
+      from: String(disabledEntry.from),
+      to: String(disabledEntry.to),
+    }, "warn");
+  }
 
   // Only a NEW (non-replayed) snapshot changes the sidecar — the single
   // source of truth for the restore path.

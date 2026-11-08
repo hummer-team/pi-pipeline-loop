@@ -635,3 +635,47 @@ describe("216 P3: child-triggered freeze routes to the owner arm (R6-7)", () => 
     expect(eventsFor("pipeline_session_aborted")).toHaveLength(0);
   });
 });
+
+// ─── 227 Phase 1 (D-7): an auto-job child defers every NON-AUTO gate ─────────
+
+describe("227 P1: auto-job child never advances a non-auto gate", () => {
+  const autoJobMeta = (pid: string): Partial<SessionMeta> => ({
+    autoJob: { jobId: "defer_loop", jobPath: "docs/jobs/defer_loop.yaml", docIndex: 0, totalDocs: 1 },
+    pipelineId: pid,
+  });
+
+  it("⑰ auto job + manual gate → deferred with the auto_job_owner_advances reason", async () => {
+    const c = await makeSettleCase({
+      label: "auto-child-manual-gate",
+      confirmManual: true,
+      meta: autoJobMeta,
+    });
+    let selectCalls = 0;
+    c.ctx.ui.select = async () => { selectCalls++; return undefined; };
+
+    await createAgentSettled(c.config).handler(c.ctx as never);
+
+    const file = readAllAudit(c.root);
+    // The gate itself is `no-gate` (owner-only evaluation) — never suppressed
+    // by the child side, and never advanced.
+    expect(countEvents(file, "confirm_gate_suppressed_child")).toBe(0);
+    expect(countEvents(file, "stage_settle_child_deferred")).toBe(1);
+    expect(countEvents(file, "stage_advance")).toBe(0);
+    const f = fieldsOfLast(file, "stage_settle_child_deferred");
+    expect(f.reason).toBe("auto_job_owner_advances");
+    expect(f.runId).toBeUndefined();
+    expect(selectCalls).toBe(0);
+    expect(c.meta.currentStage).toBe("plan");
+  });
+
+  it("⑱ auto job + default (auto) confirm mode → the verify-pass advance still runs", async () => {
+    const c = await makeSettleCase({ label: "auto-child-auto-mode", meta: autoJobMeta });
+
+    await createAgentSettled(c.config).handler(c.ctx as never);
+
+    const file = readAllAudit(c.root);
+    expect(countEvents(file, "stage_settle_child_deferred")).toBe(0);
+    expect(countEvents(file, "stage_advance")).toBe(1);
+    expect(c.meta.currentStage).toBe("develop");
+  });
+});

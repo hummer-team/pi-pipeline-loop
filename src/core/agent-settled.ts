@@ -1157,28 +1157,40 @@ export function createAgentSettled(
         // no wake / no verifyAttempts", not "zero verify".
         const freshForDefer = ctx.session.getMeta() ?? meta;
         const boundRunForDefer = boundActiveRun(freshForDefer, freshForDefer.currentStage);
-        if (detectSessionRole(ctx).isChild && boundRunForDefer) {
+        const childRoleForDefer = detectSessionRole(ctx).isChild;
+        // 227 Phase 1 (D-7): the OWNER alone evaluates a non-auto gate. A child
+        // that fell through `no-gate` must not advance the job itself.
+        // A MISSING confirm block means the documented default `auto` mode, so
+        // the ordinary verify-pass advance keeps working — blocking it would
+        // stall every auto job on a stage without an explicit confirm block.
+        const confirmModeForDefer = stageConfig.confirm?.mode ?? "auto";
+        const autoChildGate =
+          childRoleForDefer && !!freshForDefer.autoJob && confirmModeForDefer !== "auto";
+        if (autoChildGate || (childRoleForDefer && boundRunForDefer)) {
+          const reason = boundRunForDefer ? "bound_run_owner_mismatch" : "auto_job_owner_advances";
           await writeAuditLog("stage_settle_child_deferred", {
             pipelineId: freshForDefer.pipelineId,
             stage: freshForDefer.currentStage,
-            reason: "bound_run_owner_mismatch",
-            runId: boundRunForDefer.binding.runId,
+            reason,
+            ...(boundRunForDefer ? { runId: boundRunForDefer.binding.runId } : {}),
           }, "warn");
-          await recordStageExitRefusal(
-            // 217 review issue 1 (High): forward the declared capability — the
-            // refusal overflow freeze (recordStageExitRefusal → toFlowCtx →
-            // freezeAndPrompt) reads `ctx.hasUI` at the T2.2 gate.
-            { session: ctxWithPi.session, ui: ctxWithPi.ui, pi: ctxWithPi.pi, _ctx: ctxWithPi._ctx, hasUI: ctxWithPi.hasUI } as Parameters<typeof recordStageExitRefusal>[0],
-            config,
-            {
-              stage: freshForDefer.currentStage,
-              fromStage: freshForDefer.currentStage,
-              toStage: stageConfig.nextStage,
-              reason: "bound_run_owner_mismatch",
-              source: "hook_settle",
-            },
-            { onStageChanged: buildOnStageChangedCallback(ctx, config) },
-          );
+          if (boundRunForDefer) {
+            await recordStageExitRefusal(
+              // 217 review issue 1 (High): forward the declared capability — the
+              // refusal overflow freeze (recordStageExitRefusal → toFlowCtx →
+              // freezeAndPrompt) reads `ctx.hasUI` at the T2.2 gate.
+              { session: ctxWithPi.session, ui: ctxWithPi.ui, pi: ctxWithPi.pi, _ctx: ctxWithPi._ctx, hasUI: ctxWithPi.hasUI } as Parameters<typeof recordStageExitRefusal>[0],
+              config,
+              {
+                stage: freshForDefer.currentStage,
+                fromStage: freshForDefer.currentStage,
+                toStage: stageConfig.nextStage,
+                reason: "bound_run_owner_mismatch",
+                source: "hook_settle",
+              },
+              { onStageChanged: buildOnStageChangedCallback(ctx, config) },
+            );
+          }
           return;
         }
 
