@@ -812,6 +812,27 @@ async function startPendingDoc(input: {
   };
   const requestedStage = target.doc.startStage ?? job.defaults.startStage;
   const { stage, derivation } = resolveStartStage(requestedStage, facts);
+
+  // 227 Phase 6 (D-18): a late start stage BYPASSES the design-review branch.
+  // That is allowed (startStage stays honoured), but it must be visible: an
+  // `assisted` job that promised the full comparison never runs the loop.
+  // "The JSON can actually run design-review" — the shipped template reaches
+  // the stage through the menu (`plan.nextStage` stays `develop`), so presence
+  // + enablement is the truthful predicate (NOT a plan→design-review edge).
+  const drBranchInJson =
+    overlay.json.stages?.["design-review"] !== undefined && isDesignReviewStageEnabled(config);
+  if (
+    job.tier === "assisted"
+    && (stage === "develop" || stage === "review" || stage === "fix")
+    && drBranchInJson
+  ) {
+    await safeWriteAuditLog("design_review_skipped_by_start_stage", {
+      jobId,
+      doc: target.doc.doc,
+      startStage: stage,
+      derivation,
+    }, "warn");
+  }
   const ui = createPipelineUI(config);
   const evidence = await checkStartStageEvidence({
     config,
