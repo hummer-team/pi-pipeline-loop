@@ -292,6 +292,37 @@ describe("227 P5: evidence ⑤ — delivery summaries", () => {
     if (autoResult.ok) expect(autoResult.autoValidated).toEqual(["develop"]);
     expect(auto.meta.summaries?.develop?.status).toBe("valid");
   });
+
+  it("227 review fix 1: several pending summaries are auto-validated in one batch", async () => {
+    // `meta.summaries` is the CALL-TIME snapshot and `updateMeta` replaces the
+    // whole map: per-stage writes used to leave only the LAST stage `valid`.
+    const env = await makeEnv({
+      visit: ["clarify", "plan", "develop", "review"],
+      summaries: false,
+      auto: true,
+    });
+    const developContent = "---\n{}\n---\n# develop\n";
+    const reviewContent = "---\n{}\n---\n# review\n";
+    const developPath = await summaryFile(env.root, "develop", developContent);
+    const reviewPath = await summaryFile(env.root, "review", reviewContent);
+    env.meta.summaries = {
+      develop: { path: developPath, hash: hash(developContent), status: "pending" },
+      review: { path: reviewPath, hash: hash(reviewContent), status: "pending" },
+    };
+    await seedReviewPassEvidence(env.config, env.meta);
+
+    const result = await evaluateCompletionGate({
+      config: env.config,
+      meta: env.meta,
+      session: env.session,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.autoValidated).toEqual(["develop", "review"]);
+    // Both validations must survive the single persisted write.
+    const persisted = env.session.getMeta().summaries;
+    expect(persisted?.develop?.status).toBe("valid");
+    expect(persisted?.review?.status).toBe("valid");
+  });
 });
 
 describe("227 P5: unvisited evidence is exempt", () => {

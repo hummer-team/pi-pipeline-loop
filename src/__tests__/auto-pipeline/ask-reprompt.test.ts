@@ -251,6 +251,39 @@ describe("227 P4: maybeAutoAskReprompt wiring", () => {
     expect(audits.some((a) => a.event === "auto_ask_reprompt")).toBe(false);
   });
 
+  it("227 review fix 4: an exhausted budget never hard-stops a turn with a live executor", async () => {
+    // The 3 deliveries are spent, then the owner dispatches an executor without
+    // advancing the stage. That settle is NOT silent — it must not be counted as
+    // the 4th ASK, and it must not kill the running job.
+    const projectRoot = await makeRunningJobRoot();
+    mkdirSync(join(projectRoot, ".pi", "agents"), { recursive: true });
+    writeFileSync(
+      join(projectRoot, ".pi", "agents", "develop.md"),
+      "---\nname: develop-agent\n---\nbody\n",
+      "utf-8",
+    );
+    const meta = autoMeta({
+      autoAskReprompt: { stage: "develop", fingerprint: `${STAGE_START}:${VISITS.length}`, count: 3 },
+      activeSpawns: {
+        develop: { agentName: "develop-agent", reserved: true, startedAt: Date.now() },
+      },
+    });
+    const ctx = createMockCtx(meta);
+
+    await maybeAutoAskReprompt({
+      ctx: ctx as never,
+      config: {
+        stages: { develop: { nextStage: "review", agentPath: ".pi/agents/develop.md" } },
+        projectRoot,
+      } as never,
+      before: BEFORE,
+    });
+
+    expect(audits.some((a) => a.event === "auto_ask_reprompt_exhausted")).toBe(false);
+    expect(audits.some((a) => a.event === "auto_ask_reprompt")).toBe(false);
+    expect(meta.autoAskReprompt).toMatchObject({ count: 3 });
+  });
+
   it("227 review fix 1/2: a settle for an already-finalized job never re-prompts", async () => {
     // The job legitimately ended before this settle (crash recovery, another
     // terminal, a hard stop in an earlier turn): the sidecar is no longer

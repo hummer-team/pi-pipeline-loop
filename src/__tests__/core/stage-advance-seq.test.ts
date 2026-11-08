@@ -158,4 +158,16 @@ describe("227 P3: reviewConclusion early exit is unaffected", () => {
     expect(result.success).toBe(true);
     expect(env.meta.currentStage).toBe("fix");
   });
+
+  it("227 review fix 3: an explicit nextStage alongside the fail declaration is ignored, not refused", async () => {
+    // Natural spelling `{ nextStage: "fix", reviewConclusion: "fail" }` — the
+    // fail branch ignores `nextStage`, so the whitelist must not judge it.
+    const env = await makeEnv({ currentStage: "review", nextStage: "completed" });
+    const result = (await createStageAdvancer(env.config).execute(
+      { nextStage: "fix", reviewConclusion: "fail" },
+      env.ctx as never,
+    )) as { success?: boolean; message?: string };
+    expect(result.success).toBe(true);
+    expect(env.meta.currentStage).toBe("fix");
+  });
 });

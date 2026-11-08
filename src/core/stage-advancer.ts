@@ -56,6 +56,8 @@ import { shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { findLatestReviewReport } from "../utils/review-conclusion";
 import { spawnStageSubagent, resolveAgentMention } from "../utils/subagent-rpc";
 import { recordStageVisit, effectiveMax } from "../utils/stage-visit";
+// 227 review fix (issue 2): rebind the review ROUND ledger on `reenter`.
+import { ensureReviewRound } from "../utils/review-round";
 // 219 Phase 5 (Seam A): auto-aware visits (loop brake). The `→ design-review`
 // menu entry deliberately keeps the plain helper (it is NOT a loop edge).
 import { recordAutoAwareStageVisit, finalizeOnSoftStop } from "./auto-pipeline/stop-policy";
@@ -1831,6 +1833,7 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
           return { success: false, message: "reenter does not accept nextStage", currentStage };
         }
         const { [currentStage]: _dropped, ...restSummaries } = meta.summaries ?? {};
+        const nextStageStart = Date.now();
         ctx.session.updateMeta({
           summaries: restSummaries,
           verifyAttempts: 0,
@@ -1839,9 +1842,22 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
           precheckBlocked: undefined,
           confirmGateDeferredAt: undefined,
           confirmGateReask: undefined,
-          stageStartTime: Date.now(),
+          stageStartTime: nextStageStart,
           spawnedStages: { ...(meta.spawnedStages ?? {}), [currentStage]: undefined },
         });
+        // 227 review fix (issue 2): the review ROUND ledger is bound to the
+        // visit clock (`reviewRound.stageStartTime === meta.stageStartTime` is
+        // completion-gate evidence ⑤). Rebasing the clock without rebinding the
+        // round left a re-entered review permanently rejected. Rebinding through
+        // the shared allocator keeps the round monotonic (rule 4: a genuinely
+        // new visit advances the index) and the `review_round_allocated` audit.
+        if (currentStage === "review") {
+          ensureReviewRound(
+            { ...meta, stageStartTime: nextStageStart, summaries: restSummaries },
+            ctx.session,
+            nextStageStart,
+          );
+        }
         await safeWriteStageAudit(config, "stage_reenter", meta, { stage: currentStage });
         return {
           success: true,
@@ -1924,10 +1940,17 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       // configured `nextStage`. `completed` is plugin-exclusive and
       // `awaiting_human` exists on the human track only (D-17).
       const argNextStage = typeof args.nextStage === "string" ? args.nextStage.trim() : "";
+      // 227 review fix (issue 3): a declared review FAIL routes through the
+      // dedicated early branch below, which deliberately IGNORES `nextStage`.
+      // The whitelist runs first, so the natural
+      // `{ nextStage: "fix", reviewConclusion: "fail" }` spelling must not be
+      // rejected as `not_successor` before that branch can run.
+      const argReviewConclusion = typeof args.reviewConclusion === "string" ? args.reviewConclusion.trim() : "";
+      const declaredReviewFail = currentStage === "review" && argReviewConclusion === "fail";
       const legalNext = resolveLegalNextStage({
         config,
         currentStage,
-        ...(argNextStage ? { requested: argNextStage } : {}),
+        ...(argNextStage && !declaredReviewFail ? { requested: argNextStage } : {}),
         isAutoJob: Boolean((ctx.session.getMeta() ?? meta).autoJob),
       });
       if (!legalNext.ok) {
@@ -1962,7 +1985,8 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       }
 
       // (c2) Review conclusion declaration handling (163 Goal 2)
-      const argReviewConclusion = typeof args.reviewConclusion === "string" ? args.reviewConclusion.trim() : "";
+      // `argReviewConclusion` / `declaredReviewFail` were computed before the
+      // sequence whitelist (227 review fix, issue 3).
       // Track declaration so agent-settled can distinguish "declared but not advanced"
       // (verify fail / confirm gate pending / overflow pending) from "not declared".
       //

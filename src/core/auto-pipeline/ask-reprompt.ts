@@ -125,6 +125,20 @@ function sidecarShowsRunningJob(state: AutoJobState | null, meta: SessionMeta): 
 }
 
 /**
+ * 227 review fix (issue 4): "is this turn actually SILENT?" — the gate the
+ * budget/hard-stop decision MUST consult BEFORE counting a settle. A live
+ * executor (or a live confirm gate) means the turn is busy, not an ASK, so it
+ * can never push the budget to exhaustion. This probe runs in the async layer
+ * (pending-gate detection does I/O).
+ */
+async function isTurnIdle(config: PipelineConfig, meta: SessionMeta): Promise<boolean> {
+  const expectedAgent = resolveAgentMention(config, meta.currentStage) ?? "";
+  if (expectedAgent && scanActiveSpawnEvidence(meta.activeSpawns, expectedAgent) !== null) return false;
+  if (await detectPendingConfirmGate(config, meta)) return false;
+  return true;
+}
+
+/**
  * Deliver at most `CONFIRM_GATE_REASK_MAX` owner re-prompts per stage visit;
  * the next silent settle is a hard stop (`ask_reprompt_exhausted`).
  */
@@ -163,30 +177,32 @@ export async function maybeAutoAskReprompt(args: {
 
   const decision = shouldReprompt({ meta, before, now: Date.now() });
   if (!decision.deliver) {
-    if (decision.exhausted === true) {
-      ctx.session.updateMeta({
-        autoAskReprompt: {
-          stage: meta.currentStage,
-          fingerprint: decision.fingerprint ?? "",
-          count: decision.count ?? CONFIRM_GATE_REASK_MAX,
-        },
-      });
-      await stopAutoDocOnHardFailure({
-        ctx,
-        config,
-        meta,
-        reason: "ask_reprompt_exhausted",
-        auditEvent: "auto_ask_reprompt_exhausted",
-        auditExtras: { budget: String(CONFIRM_GATE_REASK_MAX) },
-      });
-    }
+    if (decision.exhausted !== true) return;
+    // 227 review fix (issue 4): a spent budget is only a hard stop for a TRULY
+    // silent settle. A turn that dispatched (or still holds) an executor is not
+    // an ASK, so the liveness/idle probes must be consulted BEFORE stopping —
+    // otherwise the hard stop kills a job that is making progress.
+    if (!(await isTurnIdle(config, meta))) return;
+    ctx.session.updateMeta({
+      autoAskReprompt: {
+        stage: meta.currentStage,
+        fingerprint: decision.fingerprint ?? "",
+        count: decision.count ?? CONFIRM_GATE_REASK_MAX,
+      },
+    });
+    await stopAutoDocOnHardFailure({
+      ctx,
+      config,
+      meta,
+      reason: "ask_reprompt_exhausted",
+      auditEvent: "auto_ask_reprompt_exhausted",
+      auditExtras: { budget: String(CONFIRM_GATE_REASK_MAX) },
+    });
     return;
   }
 
   // A live spawn / queued spawn means the turn is not actually idle.
-  const expectedAgent = resolveAgentMention(config, meta.currentStage) ?? "";
-  if (expectedAgent && scanActiveSpawnEvidence(meta.activeSpawns, expectedAgent) !== null) return;
-  if (await detectPendingConfirmGate(config, meta)) return;
+  if (!(await isTurnIdle(config, meta))) return;
 
   const send = ctx.pi?.sendUserMessage;
   if (typeof send !== "function") {

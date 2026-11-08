@@ -19,7 +19,7 @@
  */
 
 import * as fs from "node:fs/promises";
-import type { ExecFn, PipelineConfig, PipelineStage, SessionMeta } from "../../types";
+import type { ExecFn, PipelineConfig, PipelineStage, SessionMeta, SummaryMeta } from "../../types";
 import { checkStageSummaryHash } from "../../utils/summary-hash";
 import { safeWriteAuditLog } from "../../utils/auditLog";
 import { evaluateReviewExitGate } from "../review-exit-gate";
@@ -81,6 +81,14 @@ export async function evaluateCompletionGate(
   const { config, meta, session, execFn } = input;
   const visited = new Set<PipelineStage>(meta.stageVisitOrder ?? []);
   const autoValidated: PipelineStage[] = [];
+  /**
+   * 227 review fix (issue 1): the auto track validates on the model's behalf.
+   * The patches are accumulated and committed ONCE: `meta.summaries` is the
+   * CALL-TIME snapshot and `updateMeta` replaces the whole `summaries` map, so
+   * per-stage writes would overwrite every earlier auto-validation (two pending
+   * stages left only the last one `valid`).
+   */
+  const autoValidations: Array<{ stage: PipelineStage; previousStatus: SummaryMeta["status"]; entry: SummaryMeta }> = [];
 
   // ① — this round's review must be a REAL PASS.
   if (visited.has("review")) {
@@ -190,16 +198,31 @@ export async function evaluateCompletionGate(
     if (!meta.autoJob) {
       return fail("summary_not_valid", `stage "${stage}" summary is '${entry.status}' — validate it first.`);
     }
-    // Auto track: the plugin validates on the model's behalf (audited).
-    session.updateMeta({
-      summaries: { ...(meta.summaries ?? {}), [stage]: { ...entry, status: "valid" } },
-    });
-    autoValidated.push(stage);
-    await safeWriteAuditLog("summary_auto_validated", {
-      pipelineId: meta.pipelineId ?? "",
+    // Auto track: the plugin validates on the model's behalf (audited below).
+    autoValidations.push({
       stage,
       previousStatus: entry.status,
+      entry: { ...entry, status: "valid" },
     });
+    autoValidated.push(stage);
+  }
+
+  if (autoValidations.length > 0) {
+    // Re-read the LIVE summaries so a concurrent writer is not clobbered, then
+    // apply the whole batch in a single write.
+    const latest = session.getMeta()?.summaries ?? meta.summaries ?? {};
+    const summaries: Record<string, SummaryMeta> = { ...latest };
+    for (const validation of autoValidations) {
+      summaries[validation.stage] = validation.entry;
+    }
+    session.updateMeta({ summaries });
+    for (const validation of autoValidations) {
+      await safeWriteAuditLog("summary_auto_validated", {
+        pipelineId: meta.pipelineId ?? "",
+        stage: validation.stage,
+        previousStatus: validation.previousStatus,
+      });
+    }
   }
 
   return { ok: true, autoValidated };

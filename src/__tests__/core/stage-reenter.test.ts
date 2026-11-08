@@ -16,8 +16,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import crypto from "node:crypto";
 import { createStageAdvancer } from "../../core/stage-advancer";
+import { evaluateCompletionGate } from "../../core/auto-pipeline/completion-gate";
 import { initAuditLog } from "../../utils/auditLog";
-import { makeTestConfig, makeTestMeta, createMockCtx, auditLogFileFor } from "../helpers";
+import { makeTestConfig, makeTestMeta, createMockCtx, auditLogFileFor, seedReviewPassEvidence } from "../helpers";
 import type { PipelineConfig, SessionMeta } from "../../types";
 
 let seq = 0;
@@ -133,5 +134,54 @@ describe("227 P3: stage_advance({ reenter: true })", () => {
 
     expect(result.success).toBe(false);
     expect(result.hint).toBe("stage_advance({ reenter: true })");
+  });
+});
+
+describe("227 review fix 2: re-enter at review rebinds the review ROUND", () => {
+  it("advances the round and binds it to the fresh visit clock, so the completion gate can pass", async () => {
+    const env = await makeEnv();
+    env.meta.currentStage = "review";
+    env.meta.requirementDoc = "docs/design/227_Bug.md";
+    env.meta.stageVisitOrder = ["clarify", "plan", "develop", "review"];
+    env.meta.reviewRound = {
+      index: 2,
+      stageStartTime: (env.meta.stageStartTime ?? 0) - 1_000,
+      enteredAt: 1,
+      pipelineId: env.meta.pipelineId ?? "pipe",
+    };
+    env.config.stages.review = { ...env.config.stages.review, nextStage: "completed" };
+
+    const result = (await createStageAdvancer(env.config).execute(
+      { reenter: true },
+      env.ctx as never,
+    )) as { success?: boolean; message?: string };
+
+    expect(result.success).toBe(true);
+    expect(env.meta.currentStage).toBe("review");
+    expect(env.meta.summaries?.review).toBeUndefined();
+    // The ledger is re-bound to the NEW visit clock and stays monotonic.
+    expect(env.meta.reviewRound?.stageStartTime).toBe(env.meta.stageStartTime);
+    expect(env.meta.reviewRound?.index).toBe(3);
+
+    // Regenerate the review deliverables for the new round → gate passes.
+    const content = "---\n{}\n---\n# review\n";
+    const summaryPath = join(env.root, "docs", "design", "227_review_summary.md");
+    await writeFile(summaryPath, content, "utf-8");
+    env.meta.summaries = {
+      ...(env.meta.summaries ?? {}),
+      review: {
+        path: summaryPath,
+        hash: crypto.createHash("sha256").update(content).digest("hex"),
+        status: "valid",
+      },
+    };
+    await seedReviewPassEvidence(env.config, env.meta);
+
+    const gate = await evaluateCompletionGate({
+      config: env.config,
+      meta: env.meta,
+      session: env.ctx.session as never,
+    });
+    expect(gate.ok).toBe(true);
   });
 });
