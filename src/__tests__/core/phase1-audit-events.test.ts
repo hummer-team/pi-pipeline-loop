@@ -99,7 +99,7 @@ describe("Phase 1 audit: stage_advance events", () => {
     expect(result.success).toBe(false);
     const log = await readAuditLog(root);
     expect(log).toContain("stage_advance_failed");
-    expect(log).toContain("reason=invalid_next_stage");
+    expect(log).toContain("reason=unknown_stage");
   });
 
   it("writes stage_advance_failed for same-stage advance", async () => {

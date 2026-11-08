@@ -26,16 +26,18 @@ afterAll(async () => {
 });
 
 describe("loop cycle detection (pipeline_handoff)", () => {
-  it("rejects handoff when maxLoopCycles reached", async () => {
+  it("refuses a backward handoff target that is not the configured successor (D-4)", async () => {
+    // 227 Phase 3: review's configured successor is `completed`; `develop`
+    // is a backward rework target that the whitelist refuses.
     const config = makeTestConfig({ maxLoopCycles: 2, projectRoot: CYCLE_TMP });
     const summaryPath = join(CYCLE_TMP, "fix-cycle1.md");
-    const hash = await writeAndHash(summaryPath, "# Fix Summary\nCycle test 1");
+    const hash = await writeAndHash(summaryPath, "# Review Summary\nCycle test 1");
     const meta = makeTestMeta({
-      currentStage: "fix",
+      currentStage: "review",
       loopCycleCount: 1,
-      stageVisitOrder: ["develop", "review", "fix"],
+      stageVisitOrder: ["plan", "develop", "review"],
       summaries: {
-        fix: { path: summaryPath, hash, status: "valid" as const },
+        review: { path: summaryPath, hash, status: "valid" as const },
       },
     });
     const ctx = createMockCtx(meta);
@@ -46,23 +48,25 @@ describe("loop cycle detection (pipeline_handoff)", () => {
       ctx as any,
     );
 
-    expect(result.error).toContain("Max loop cycles");
-    expect(result.error).toContain("2");
-    // Phase 2: maxLoopCycles freeze → flowState=blocked
-    expect(meta.flowState).toBe("blocked");
-    expect(meta.blockedReason).toBe("max_loop_cycles");
+    // 227 Phase 3: a counted rework edge can only be produced by plugin
+    // routing (confirm reject) — a handoff to a non-successor is refused
+    // BEFORE any loop budget is consulted.
+    expect(result.error).toContain("Invalid nextStage");
+    expect(meta.currentStage).toBe("review");
+    expect(meta.flowState).toBeUndefined();
   });
 
   it("allows handoff within maxLoopCycles", async () => {
-    const config = makeTestConfig({ maxLoopCycles: 3, projectRoot: CYCLE_TMP });
+    const base = makeTestConfig({ maxLoopCycles: 3, projectRoot: CYCLE_TMP });
+    const config = { ...base, stages: { ...base.stages, review: { ...base.stages.review, nextStage: "develop" as const } } };
     const summaryPath = join(CYCLE_TMP, "fix-cycle2.md");
-    const hash = await writeAndHash(summaryPath, "# Fix Summary\nCycle test 2");
+    const hash = await writeAndHash(summaryPath, "# Review Summary\nCycle test 2");
     const meta = makeTestMeta({
-      currentStage: "fix",
+      currentStage: "review",
       loopCycleCount: 0,
-      stageVisitOrder: ["develop", "review", "fix"],
+      stageVisitOrder: ["plan", "develop", "review"],
       summaries: {
-        fix: { path: summaryPath, hash, status: "valid" as const },
+        review: { path: summaryPath, hash, status: "valid" as const },
       },
     });
     const ctx = createMockCtx(meta);
@@ -112,16 +116,16 @@ describe("loop cycle detection (pipeline_handoff)", () => {
     expect(result).toBeDefined();
   });
 
-  it("rejects cycle immediately when maxLoopCycles=0", async () => {
+  it("refuses the same backward target regardless of the loop budget (D-4)", async () => {
     const config = makeTestConfig({ maxLoopCycles: 0, projectRoot: CYCLE_TMP });
     const summaryPath = join(CYCLE_TMP, "fix-cycle0.md");
-    const hash = await writeAndHash(summaryPath, "# Fix Summary\nCycle test 0");
+    const hash = await writeAndHash(summaryPath, "# Review Summary\nCycle test 0");
     const meta = makeTestMeta({
-      currentStage: "fix",
+      currentStage: "review",
       loopCycleCount: 0,
-      stageVisitOrder: ["develop", "review", "fix"],
+      stageVisitOrder: ["plan", "develop", "review"],
       summaries: {
-        fix: { path: summaryPath, hash, status: "valid" as const },
+        review: { path: summaryPath, hash, status: "valid" as const },
       },
     });
     const ctx = createMockCtx(meta);
@@ -132,7 +136,7 @@ describe("loop cycle detection (pipeline_handoff)", () => {
       ctx as any,
     );
 
-    expect(result.error).toContain("Max loop cycles");
-    expect(result.error).toContain("0");
+    expect(result.error).toContain("Invalid nextStage");
+    expect(meta.currentStage).toBe("review");
   });
 });

@@ -27,6 +27,9 @@ import { createDesignReviewRuntimeContext } from "../core/design-review/runtime-
 import { consumeDesignReviewResult } from "../core/design-review/entry-result";
 // 193 Phase 3 (task 6): RECHECK barrier for ordinary forward releases
 import { checkRecheckForwardRelease } from "../core/design-review/flow-decision-guard";
+// 227 Phase 3 (D-4): the forward target whitelist (configured nextStage only).
+import { resolveLegalNextStage, buildStageSequence } from "../utils/stage-sequence";
+import { describeInvalidNextStage } from "../utils/guard-conflict-report";
 // 194 Phase 3 (C5): caller gate + ONE atomic bound commit (visit + transition)
 import { gateStageToolCall } from "../core/stage-executor/tool-consumption";
 import { boundActiveRun, commitBoundStageExit } from "../core/stage-executor/transition-commit";
@@ -139,7 +142,35 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
       // coordinatorResult.status === "not-applicable" → continue with original flow
 
       const currentStage = meta.currentStage;
-      const nextStage = args.nextStage as PipelineStage;
+      // 227 Phase 3 (D-4): the ONLY legal forward target is the configured
+      // `nextStage`; `completed` stays plugin-exclusive until the completion gate.
+      const rawNextStage = typeof args.nextStage === "string" ? args.nextStage.trim() : "";
+      const legalNext = resolveLegalNextStage({
+        config,
+        currentStage,
+        ...(rawNextStage ? { requested: rawNextStage } : {}),
+        isAutoJob: Boolean((ctx.session.getMeta() ?? meta).autoJob),
+      });
+      // `completed` is plugin-exclusive in principle, but THIS tool is the
+      // documented terminal handoff entry: Phase 5 attaches the completion gate
+      // before the write, so it is admitted here and gated there.
+      const terminalHandoff =
+        !legalNext.ok && legalNext.reason === "terminal_reserved" && rawNextStage === "completed";
+      if ((!legalNext.ok && !terminalHandoff) || (legalNext.ok && legalNext.target === null)) {
+        const detail = legalNext.ok
+          ? "no configured next stage"
+          : legalNext.reason === "same_stage"
+            ? "cannot hand off to the same stage — use stage_advance({ reenter: true })"
+            : legalNext.reason === "terminal_reserved"
+              ? '"completed" is written by the plugin after the completion gate'
+              : legalNext.reason === "awaiting_human_in_auto"
+                ? '"awaiting_human" is not available in an auto job'
+                : "not the configured next stage";
+        return {
+          error: `Invalid nextStage "${rawNextStage}": ${detail}. ${describeInvalidNextStage(buildStageSequence(config, currentStage))}`,
+        };
+      }
+      const nextStage: PipelineStage = legalNext.ok ? legalNext.target! : (rawNextStage as PipelineStage);
       const note = (args.note as string) ?? "";
 
 
@@ -192,7 +223,7 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
           success: false,
           error:
             `Summary '${mismatchedStage}' has been modified manually (hash mismatch). ` +
-            `Confirm to re-enter stage via stage_advance({ nextStage: "${mismatchedStage}" }).`,
+            `Re-enter stage via stage_advance({ reenter: true }).`,
           mismatchedStage,
         };
       }

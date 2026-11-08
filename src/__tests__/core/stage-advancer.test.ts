@@ -151,7 +151,8 @@ describe("createStageAdvancer", () => {
   it("nextStage param overrides default target", async () => {
     const config = makeTestConfig();
     const meta = makeTestMeta({ currentStage: "review" });
-    config.stages["review"] = { ...config.stages["review"], nextStage: "completed" };
+    // 227 Phase 3: the ONLY legal target is the configured nextStage.
+    config.stages["review"] = { ...config.stages["review"], nextStage: "fix" };
 
     const ctx = createCtx(meta);
     const tool = createStageAdvancer(config);
@@ -163,10 +164,10 @@ describe("createStageAdvancer", () => {
     expect(meta.previousStage).toBe("review");
   });
 
-  it("nextStage param works for branch to awaiting_human", async () => {
+  it("nextStage param works for branch to awaiting_human (human track)", async () => {
     const config = makeTestConfig();
     const meta = makeTestMeta({ currentStage: "clarify" });
-    config.stages["clarify"] = { ...config.stages["clarify"], nextStage: "plan" };
+    config.stages["clarify"] = { ...config.stages["clarify"], nextStage: "awaiting_human" };
 
     const ctx = createCtx(meta);
     const tool = createStageAdvancer(config);
@@ -1615,14 +1616,16 @@ describe("Phase 0 (182) G5: fix→terminal hard guard", () => {
 
     const result = await tool.execute({ nextStage: "completed" }, ctx as any);
 
+    // 227 Phase 3 (D-4): `completed` is plugin-exclusive — the seq whitelist
+    // rejects it before the (kept) depth-in-depth fix guard can speak.
     expect((result as any).success).toBe(false);
-    expect((result as any).message).toContain("review");
     expect((result as any).message).toContain("completed");
+    expect((result as any).message).toContain("completion gate");
 
     // Verify audit
     const auditPath = auditLogFileFor(join(TMP6, ".pi", "audit"), meta.pipelineId);
     const auditContent = await readFile(auditPath, "utf-8");
-    expect(auditContent).toContain("fix_terminal_blocked");
+    expect(auditContent).toContain("stage_advance_failed");
 
     await rm(TMP6, { recursive: true, force: true });
   });
@@ -1640,7 +1643,7 @@ describe("Phase 0 (182) G5: fix→terminal hard guard", () => {
     const result = await tool.execute({ nextStage: "awaiting_human" }, ctx as any);
 
     expect((result as any).success).toBe(false);
-    expect((result as any).message).toContain("review");
+    expect((result as any).message).toContain("awaiting_human");
 
     await rm(TMP6, { recursive: true, force: true });
   });
@@ -1649,6 +1652,8 @@ describe("Phase 0 (182) G5: fix→terminal hard guard", () => {
     const TMP6 = join(tmpdir(), "pi-fix-terminal-3-" + Date.now());
     await mkdir(join(TMP6, ".pi", "audit"), { recursive: true });
     const config = makeTestConfig({ projectRoot: TMP6 });
+    // 227 Phase 3: the fix→review quality loop IS the configured successor.
+    config.stages["fix"] = { ...config.stages["fix"], nextStage: "review" };
     await initAuditLog(config);
 
     const meta = makeTestMeta({ currentStage: "fix" });

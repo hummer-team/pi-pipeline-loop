@@ -81,7 +81,7 @@ import { createInitialState, computeHash } from "./design-review/state";
 // 211 Phase 1: one-shot arm credential for the child-suppressed confirm gate
 import { armConfirmGateEscalation, clearConfirmGateEscalation } from "./confirm-gate-escalation";
 import { describeInvalidNextStage } from "../utils/guard-conflict-report";
-import { buildStageSequence } from "../utils/stage-sequence";
+import { buildStageSequence, resolveLegalNextStage } from "../utils/stage-sequence";
 // 227 Phase 2 (D-8): every design-review entry/exit rides the domain seam.
 import {
   authoriseDesignReviewEntry,
@@ -90,6 +90,27 @@ import {
   type DesignReviewEntryAuth,
 } from "./design-review/entry-automation";
 import { stopAutoDocOnHardFailure } from "./auto-pipeline/stop-policy";
+
+/**
+ * 227 Phase 3 (D-4): human-readable cause for a rejected forward target.
+ * The caller always appends the configured sequence.
+ */
+function describeLegalNextStageFailure(
+  reason: "unknown_stage" | "not_successor" | "same_stage" | "terminal_reserved" | "awaiting_human_in_auto",
+): string {
+  switch (reason) {
+    case "same_stage":
+      return "cannot advance to the same stage — use stage_advance({ reenter: true }) to re-enter it.";
+    case "terminal_reserved":
+      return '"completed" is written by the plugin after the completion gate.';
+    case "awaiting_human_in_auto":
+      return '"awaiting_human" is not available in an auto job.';
+    case "not_successor":
+      return "not the configured next stage.";
+    case "unknown_stage":
+      return "not defined in pipeline config.";
+  }
+}
 
 // ─── Confirm Gate Types (Phase 3 — 162) ──────────────────────────────────────
 
@@ -1682,6 +1703,13 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
             "human confirmation before advancing. Omit/false advances automatically " +
             "(recorded as confirm_smart_skip in the audit log).",
         },
+        reenter: {
+          type: "boolean",
+          description:
+            "Re-enter the CURRENT stage (e.g. after a summary hash mismatch). Clears this " +
+            "visit's summary/verify/spawn artifacts and restarts the stage clock; the stage " +
+            "does not change. Cannot be combined with nextStage.",
+        },
         reviewConclusion: {
           type: "string",
           enum: ["pass", "fail"],
@@ -1793,6 +1821,33 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       }
       // coordinatorResult.status === "not-applicable" → continue with original flow
 
+      // 227 Phase 3 (D-5): explicit same-stage re-entry. Clears the CURRENT
+      // visit's artifacts so the executor is re-dispatched with a fresh clock;
+      // no stage change (the old `nextStage=<current>` form is now rejected).
+      if (args.reenter === true) {
+        if (typeof args.nextStage === "string" && args.nextStage.trim().length > 0) {
+          return { success: false, message: "reenter does not accept nextStage", currentStage };
+        }
+        const { [currentStage]: _dropped, ...restSummaries } = meta.summaries ?? {};
+        ctx.session.updateMeta({
+          summaries: restSummaries,
+          verifyAttempts: 0,
+          verifyFailures: [],
+          violations: [],
+          precheckBlocked: undefined,
+          confirmGateDeferredAt: undefined,
+          confirmGateReask: undefined,
+          stageStartTime: Date.now(),
+          spawnedStages: { ...(meta.spawnedStages ?? {}), [currentStage]: undefined },
+        });
+        await safeWriteStageAudit(config, "stage_reenter", meta, { stage: currentStage });
+        return {
+          success: true,
+          message: `Stage "${currentStage}" re-entered. Regenerate its deliverables and summary.`,
+          currentStage,
+        };
+      }
+
       // G7: Block advance when develop/fix stage has uncommitted changes.
       // Fail-open: skip check when execFn is unavailable.
       if ((currentStage === "develop" || currentStage === "fix") && deps?.execFn) {
@@ -1825,10 +1880,9 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
             success: false,
             message:
               `Summary '${mismatchedStage}' has been modified manually (hash mismatch). ` +
-              `Cannot advance. Re-enter stage '${mismatchedStage}' to regenerate summary, ` +
-              `or call stage_advance({ nextStage: "${mismatchedStage}" }) to confirm re-entry.`,
+              `Cannot advance. Re-enter stage '${mismatchedStage}' to regenerate summary.`,
             mismatchedStage,
-            hint: `stage_advance({ nextStage: "${mismatchedStage}" })`,
+            hint: `stage_advance({ reenter: true })`,
           };
         }
       }
@@ -1864,35 +1918,30 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         };
       }
 
-      // (b) Determine target stage: explicit arg overrides static config
+      // (b)/(c) 227 Phase 3 (D-4): the ONLY legal forward target is the
+      // configured `nextStage`. `completed` is plugin-exclusive and
+      // `awaiting_human` exists on the human track only (D-17).
       const argNextStage = typeof args.nextStage === "string" ? args.nextStage.trim() : "";
-      const resolvedTarget = (argNextStage ? (argNextStage as PipelineStage) : stageConfig.nextStage);
-
-      // (c) Target legality validation
-      if (resolvedTarget !== null && !(resolvedTarget in config.stages)) {
+      const legalNext = resolveLegalNextStage({
+        config,
+        currentStage,
+        ...(argNextStage ? { requested: argNextStage } : {}),
+        isAutoJob: Boolean((ctx.session.getMeta() ?? meta).autoJob),
+      });
+      if (!legalNext.ok) {
         await safeWriteStageAudit(config, "stage_advance_failed", meta, {
           fromStage: currentStage,
-          reason: "invalid_next_stage",
-          target: String(resolvedTarget),
+          reason: legalNext.reason,
+          target: argNextStage,
         }, "warn");
         return {
           success: false,
-          message: `Invalid nextStage "${resolvedTarget}": not defined in pipeline config. ${describeInvalidNextStage(buildStageSequence(config, currentStage))}`,
+          message: `Invalid nextStage "${argNextStage}": ${describeLegalNextStageFailure(legalNext.reason)} ${describeInvalidNextStage(legalNext.legal)}`,
           currentStage,
+          ...(legalNext.reason === "same_stage" ? { hint: "stage_advance({ reenter: true })" } : {}),
         };
       }
-      if (resolvedTarget !== null && resolvedTarget === currentStage) {
-        await safeWriteStageAudit(config, "stage_advance_failed", meta, {
-          fromStage: currentStage,
-          reason: "same_stage",
-          target: String(resolvedTarget),
-        }, "warn");
-        return {
-          success: false,
-          message: `Invalid nextStage "${resolvedTarget}": cannot advance to the same stage. ${describeInvalidNextStage(buildStageSequence(config, currentStage))}`,
-          currentStage,
-        };
-      }
+      const resolvedTarget: PipelineStage | null = legalNext.target;
 
       // Phase 0 (182) G5: Fix stage must route through review — block direct
       // advancement to terminal states (completed/awaiting_human) from fix.

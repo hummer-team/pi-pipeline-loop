@@ -164,7 +164,8 @@ describe("createPipelineHandoff", () => {
     const tool = createPipelineHandoff(config);
     const result = (await tool.execute({ nextStage: "nonexistent" }, ctx as any)) as any;
 
-    expect(result.error).toContain("Unknown stage");
+    // 227 Phase 3: the seq whitelist rejects an undefined stage as well.
+    expect(result.error).toContain("Invalid nextStage");
     await rm(TMP, { recursive: true, force: true });
   });
 });

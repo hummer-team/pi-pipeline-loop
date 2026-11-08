@@ -1,0 +1,137 @@
+/**
+ * 227 Phase 3 (D-5): `stage_advance({ reenter: true })` is the ONLY same-stage
+ * re-entry carrier — the old `nextStage: <current stage>` form is refused by
+ * the sequence whitelist.
+ *
+ * Pins:
+ * - the current visit's summary / verify / spawn artifacts are cleared;
+ * - `stageStartTime` is rewritten (fresh executor clock);
+ * - a combined `nextStage` is rejected;
+ * - the event is audited as `stage_reenter`;
+ * - a second re-entry is idempotent.
+ */
+import { describe, it, expect, afterEach } from "bun:test";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import crypto from "node:crypto";
+import { createStageAdvancer } from "../../core/stage-advancer";
+import { initAuditLog } from "../../utils/auditLog";
+import { makeTestConfig, makeTestMeta, createMockCtx, auditLogFileFor } from "../helpers";
+import type { PipelineConfig, SessionMeta } from "../../types";
+
+let seq = 0;
+const roots: string[] = [];
+
+interface Env {
+  root: string;
+  config: PipelineConfig;
+  meta: SessionMeta;
+  ctx: ReturnType<typeof createMockCtx>;
+  summaryPath: string;
+}
+
+async function makeEnv(): Promise<Env> {
+  const root = join(tmpdir(), `pi-227-reenter-${Date.now()}-${++seq}`);
+  roots.push(root);
+  await mkdir(join(root, "docs", "design"), { recursive: true });
+  await mkdir(join(root, ".pi", "audit"), { recursive: true });
+  const summaryPath = join(root, "docs", "design", "227_develop_summary.md");
+  const content = "# Develop summary\n";
+  await writeFile(summaryPath, content, "utf-8");
+  const hash = crypto.createHash("sha256").update(content).digest("hex");
+
+  const config = makeTestConfig({ projectRoot: root });
+  await initAuditLog(config);
+  const meta = makeTestMeta({
+    currentStage: "develop",
+    pipelineId: `pipe-227-reenter-${seq}`,
+    stageStartTime: Date.now() - 60_000,
+    verifyAttempts: 2,
+    verifyFailures: [{ ruleType: "requiredFiles", detail: "x", timestamp: 1 }],
+    violations: [{ type: "x" } as never],
+    precheckBlocked: { stage: "develop", missing: ["docs/x.md"], at: 1 },
+    confirmGateDeferredAt: { stage: "develop", at: 1 },
+    confirmGateReask: { stage: "develop", count: 2 },
+    spawnedStages: { develop: 12345 },
+    summaries: {
+      develop: { path: summaryPath, hash, status: "valid" as const },
+      review: { path: summaryPath, hash, status: "valid" as const },
+    },
+  });
+  return { root, config, meta, ctx: createMockCtx(meta), summaryPath };
+}
+
+afterEach(async () => {
+  while (roots.length > 0) {
+    await rm(roots.pop()!, { recursive: true, force: true });
+  }
+});
+
+describe("227 P3: stage_advance({ reenter: true })", () => {
+  it("clears the current visit's artifacts and restarts the clock", async () => {
+    const env = await makeEnv();
+    const before = env.meta.stageStartTime;
+
+    const result = (await createStageAdvancer(env.config).execute(
+      { reenter: true },
+      env.ctx as never,
+    )) as { success?: boolean; message?: string };
+
+    expect(result.success).toBe(true);
+    expect(result.message).toContain("re-entered");
+    expect(env.meta.currentStage).toBe("develop");
+    expect(env.meta.summaries?.develop).toBeUndefined();
+    // Only the CURRENT visit is dropped — other stages keep their summaries.
+    expect(env.meta.summaries?.review).toBeDefined();
+    expect(env.meta.verifyAttempts).toBe(0);
+    expect(env.meta.verifyFailures).toEqual([]);
+    expect(env.meta.violations).toEqual([]);
+    expect(env.meta.precheckBlocked).toBeUndefined();
+    expect(env.meta.confirmGateDeferredAt).toBeUndefined();
+    expect(env.meta.confirmGateReask).toBeUndefined();
+    expect(env.meta.spawnedStages?.develop).toBeUndefined();
+    expect(env.meta.stageStartTime).toBeGreaterThan(before);
+  });
+
+  it("rejects a combined nextStage", async () => {
+    const env = await makeEnv();
+    const result = (await createStageAdvancer(env.config).execute(
+      { reenter: true, nextStage: "review" },
+      env.ctx as never,
+    )) as { success?: boolean; message?: string };
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("reenter does not accept nextStage");
+    expect(env.meta.currentStage).toBe("develop");
+    expect(env.meta.summaries?.develop).toBeDefined();
+  });
+
+  it("audits one stage_reenter per call and is idempotent", async () => {
+    const env = await makeEnv();
+    const tool = createStageAdvancer(env.config);
+
+    await tool.execute({ reenter: true }, env.ctx as never);
+    await tool.execute({ reenter: true }, env.ctx as never);
+
+    expect(env.meta.currentStage).toBe("develop");
+    expect(env.meta.verifyAttempts).toBe(0);
+    const audit = await readFile(
+      auditLogFileFor(join(env.root, ".pi", "audit"), env.meta.pipelineId),
+      "utf-8",
+    );
+    const reentries = audit.split("\n").filter((line) => line.includes("stage_reenter"));
+    expect(reentries).toHaveLength(2);
+  });
+
+  it("the old `nextStage: <current stage>` form is refused with the hint", async () => {
+    const env = await makeEnv();
+    const result = (await createStageAdvancer(env.config).execute(
+      { nextStage: "develop" },
+      env.ctx as never,
+    )) as { success?: boolean; hint?: string };
+
+    expect(result.success).toBe(false);
+    expect(result.hint).toBe("stage_advance({ reenter: true })");
+  });
+});
