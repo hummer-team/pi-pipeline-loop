@@ -182,12 +182,17 @@ export function recordStageStats(
   session: { updateMeta: (p: Partial<SessionMeta>) => unknown },
   meta: SessionMeta,
   stage: PipelineStage,
-  evidence: Pick<StageExitEvidence, "durationMs" | "verifyAttempts" | "confirmRejections">,
+  evidence: Pick<
+    StageExitEvidence,
+    "durationMs" | "verifyAttempts" | "confirmRejections" | "stageEnteredAt"
+  >,
 ): void {
   const snapshot: StageStatSnapshot = {
     durationMs: evidence.durationMs,
     verifyAttempts: evidence.verifyAttempts,
     confirmRejections: evidence.confirmRejections,
+    // 227 Phase 5 (D-15): the entry clock is the fix-commit baseline.
+    startedAt: evidence.stageEnteredAt,
   };
   session.updateMeta({
     stageStats: { ...(meta.stageStats ?? {}), [stage]: snapshot },

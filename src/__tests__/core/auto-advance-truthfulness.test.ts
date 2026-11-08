@@ -44,7 +44,7 @@ import { maybeHandleConfirmGate } from "../../core/stage-advancer";
 import { handleFixExecutorCompleted } from "../../core/fix-executor-completion";
 import { createPipelineUI } from "../../core/pipeline-ui";
 import { initAuditLog } from "../../utils/auditLog";
-import { makeTestConfig, makeTestMeta, makeStrictSession } from "../helpers";
+import { seedCompletionEvidence, makeTestConfig, makeTestMeta, makeStrictSession } from "../helpers";
 import type {
   PipelineConfig,
   PipelineStage,
@@ -413,6 +413,8 @@ describe("216 P1: refused bound exit breaks the wake loop truthfully", () => {
         stageVisitOrder: ["clarify", "plan", "develop", "review"],
       }),
     });
+    // 227 Phase 5: the completion gate needs the five evidence items.
+    await seedCompletionEvidence(c.config, c.session.getMeta()!);
 
     const outcome = await autoAdvanceAfterVerify(
       c.config,

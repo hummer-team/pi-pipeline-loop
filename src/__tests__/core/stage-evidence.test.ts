@@ -192,12 +192,22 @@ describe("210 Phase 4: recordStageStats", () => {
     const writes: Partial<SessionMeta>[] = [];
     const session = { updateMeta: (p: Partial<SessionMeta>) => { writes.push(p); return undefined; } };
 
-    recordStageStats(session, base, "develop", { durationMs: 222, verifyAttempts: 3, confirmRejections: 1 });
+    recordStageStats(session, base, "develop", {
+      durationMs: 222,
+      verifyAttempts: 3,
+      confirmRejections: 1,
+      stageEnteredAt: 1_700_000_000_000,
+    });
 
     expect(writes.length).toBe(1);
     expect(writes[0].stageStats).toEqual({
       clarify: { durationMs: 100, verifyAttempts: 0, confirmRejections: 0 },
-      develop: { durationMs: 222, verifyAttempts: 3, confirmRejections: 1 },
+      develop: {
+        durationMs: 222,
+        verifyAttempts: 3,
+        confirmRejections: 1,
+        startedAt: 1_700_000_000_000,
+      },
     });
     // The base meta object itself must not be mutated (single write point through the session).
     expect(base.stageStats!.develop).toBeUndefined();

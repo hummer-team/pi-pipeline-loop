@@ -295,6 +295,8 @@ export function createPipelineVerify(
           returnResult: true,
           ui,
           emitExitEvidence: true,
+          // 227 Phase 5: the completion gate reconciles fix commits through git.
+          ...(deps?.execFn ? { execFn: deps.execFn } : {}),
         })) as unknown as Record<string, unknown>;
       }
 

@@ -520,7 +520,7 @@ export function createPipeline(config: PipelineConfig): ExtensionFactory {
       createPipelineState(config),
       createGenerateSummary(config),
       createValidateSummary(config),
-      createPipelineHandoff(config),
+      createPipelineHandoff(config, { execFn }),
     ];
     for (const t of tools) {
       // TSDoc: parameters cast — internal JSON Schema passed to TypeBox TSchema slot.

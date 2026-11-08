@@ -9,7 +9,7 @@
  * now lives in stage-advancer.ts (maybeHandleConfirmGate and helpers).
  */
 
-import type { SessionMeta, PipelineStage, VerifyFailureItem, PipelineConfig } from "../types";
+import type { SessionMeta, PipelineStage, VerifyFailureItem, PipelineConfig, ExecFn } from "../types";
 import { writeAuditLog, writeStageAudit, safeWriteAuditLog } from "../utils/auditLog";
 // 210 Phase 7: per-stage usage drain + `stage_usage` audit fields at exit.
 import { takeStageUsageAuditFields } from "./usage-recorder";
@@ -48,6 +48,8 @@ import { spawnStageSubagent, clearAllPendingSpawns } from "../utils/subagent-rpc
 import { buildOnStageChangedCallback } from "../commands/pipeline-start";
 // 219 Phase 5 (Seam A): auto-aware stage visits (loop brake).
 import { recordAutoAwareStageVisit, finalizeOnSoftStop, stopAutoDocOnHardFailure } from "./auto-pipeline/stop-policy";
+// 227 Phase 5 (D-11/D-12): the five-evidence completion gate.
+import { enforceCompletionGate } from "./auto-pipeline/completion-gate";
 import { describeEmptyOrInvalidRuleSet } from "../utils/guard-conflict-report";
 // 227 Phase 2 (D-8): every design-review entry rides the domain seam.
 import {
@@ -146,7 +148,9 @@ export type StageExitBlockReason =
   | `bound_exit_refused:${string}`
   // 227 Phase 2 (D-8): the design-review domain gates both directions.
   | "design_review_entry_required"
-  | "design_review_entry_blocked";
+  | "design_review_entry_blocked"
+  // 227 Phase 5 (D-12): an unsatisfied completion gate never writes completed.
+  | "completion_gate_blocked";
 
 /** Options controlling applyVerifyPass behavior for different callers */
 interface ApplyVerifyPassOpts {
@@ -166,6 +170,8 @@ interface ApplyVerifyPassOpts {
   returnResult: boolean;
   /** Optional PipelineUI for TUI output */
   ui?: PipelineUI;
+  /** 227 Phase 5: DI shell execution used by the completion gate (fix commits). */
+  execFn?: ExecFn;
   /**
    * M1 fix: When true, suppress writing the auto_verify_pass audit event.
    * Used by the "skipped" path (config-error skip treated as pass) where
@@ -494,6 +500,29 @@ export async function applyVerifyPass(
     // design-review. A child-deferred entry must be completed by the owner
     // first — a PASS may not silently release the loop.
     const freshForDomain = ctx.session.getMeta() ?? meta;
+
+    // 227 Phase 5 (D-11/D-12): the terminal write is gated on FIVE hard
+    // evidence items — checked BEFORE the visit is counted.
+    if (nextStage === "completed") {
+      const gate = await enforceCompletionGate({
+        config: ctx.config,
+        meta: freshForDomain,
+        session: ctx.session,
+        ...(opts.execFn ? { execFn: opts.execFn } : {}),
+        runtimeCtx: ctx,
+      });
+      if (!gate.allowed) {
+        return opts.returnResult
+          ? {
+              success: false,
+              passed: true,
+              message: gate.message,
+              verifyResult: verifyResult?.verifyResult ?? null,
+              blockReason: "completion_gate_blocked",
+            }
+          : undefined;
+      }
+    }
     if (stageName === "design-review" && !freshForDomain.designReview) {
       await safeWriteAuditLog("design_review_entry_required_block", {
         pipelineId: meta.pipelineId ?? "",
@@ -733,6 +762,28 @@ export async function applyVerifyPass(
   }
 
   // Terminal stage (no next stage)
+  // 227 Phase 5 (D-12): the SECOND gate for a custom `nextStage: null` chain —
+  // the forward branch above already covers the shipped template.
+  {
+    const gate = await enforceCompletionGate({
+      config: ctx.config,
+      meta: ctx.session.getMeta() ?? meta,
+      session: ctx.session,
+      ...(opts.execFn ? { execFn: opts.execFn } : {}),
+      runtimeCtx: ctx,
+    });
+    if (!gate.allowed) {
+      return opts.returnResult
+        ? {
+            success: false,
+            passed: true,
+            message: gate.message,
+            verifyResult: verifyResult?.verifyResult ?? null,
+            blockReason: "completion_gate_blocked",
+          }
+        : undefined;
+    }
+  }
   // Phase 0 (186): clear all pendingSpawns on terminal state to prevent stale
   // entries from blocking wakeOwnerOnChainTerminal.
   clearAllPendingSpawns(ctx.session);
@@ -1209,7 +1260,7 @@ export async function autoAdvanceAfterVerify(
   verifyResult: VerifyAdvanceResult,
   pipelineUI: PipelineUI,
   /** M1 fix: optional flags for callers (e.g., skipped path suppresses auto_verify_pass audit) */
-  options?: { skipPassAudit?: boolean; caller?: StageExitCaller },
+  options?: { skipPassAudit?: boolean; caller?: StageExitCaller; execFn?: ExecFn },
 ): Promise<StageAdvanceOutcome> {
   const clearedMeta = { ...meta, advancedThisTurn: undefined, reviewConclusionDeclared: undefined };
 
@@ -1223,6 +1274,7 @@ export async function autoAdvanceAfterVerify(
     ui: pipelineUI,
     skipPassAudit: options?.skipPassAudit,
     caller: resolveStageExitCaller({ method: "rule", caller: options?.caller }),
+    ...(options?.execFn ? { execFn: options.execFn } : {}),
   });
 
   if (!verdict.success) {

@@ -90,6 +90,8 @@ import {
   type DesignReviewEntryAuth,
 } from "./design-review/entry-automation";
 import { stopAutoDocOnHardFailure } from "./auto-pipeline/stop-policy";
+// 227 Phase 5 (D-11/D-12): the five-evidence completion gate.
+import { enforceCompletionGate } from "./auto-pipeline/completion-gate";
 
 /**
  * 227 Phase 3 (D-4): human-readable cause for a rejected forward target.
@@ -2232,6 +2234,20 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         }
       }
       const skipSpawn = drEntry !== undefined;
+
+      // 227 Phase 5 (D-11/D-12): the terminal write is gated on FIVE hard
+      // evidence items. A refused exit consumes no loop budget (checked before
+      // the visit is recorded).
+      if (advanceTarget === "completed") {
+        const gate = await enforceCompletionGate({
+          config,
+          meta: ctx.session.getMeta() ?? meta,
+          session: ctx.session,
+          ...(deps?.execFn ? { execFn: deps.execFn } : {}),
+          runtimeCtx: ctx,
+        });
+        if (!gate.allowed) return { success: false, message: gate.message, currentStage };
+      }
 
       const maxCycles = effectiveMax(meta, config);
       // 219 Phase 5 (Seam A): a job-level loop brake is a SOFT stop of this doc.

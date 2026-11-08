@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "bun:test";
 import { createStageAdvancer, maybeHandleConfirmGate } from "../../core/stage-advancer";
-import { makeTestConfig, makeTestMeta, STAGE_LIST } from "../helpers";
+import { seedCompletionEvidence, makeTestConfig, makeTestMeta, STAGE_LIST } from "../helpers";
 import { writeFile, mkdir, rm, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -1072,6 +1072,8 @@ describe("Phase 0 (169) P1: visitOrder + pipeline_completed audit sequence", () 
       stageVisitOrder: ["clarify", "plan", "develop", "review"],
       loopCycleCount: 0,
     });
+    // 227 Phase 5: the completion gate needs the five evidence items.
+    await seedCompletionEvidence(config, meta);
 
     const ctx = createCtx(meta);
     const tool = createStageAdvancer(config);

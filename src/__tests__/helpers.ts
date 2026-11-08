@@ -5,6 +5,10 @@ import { readdirSync } from "node:fs";
 import { deriveStandaloneReceiptPath } from "../core/design-review/update-artifact";
 import type { RuntimeCtx } from "../core/runtime-ctx";
 import { matchCommitExpectation } from "../core/session-state";
+// 227 Phase 5: the completion gate's five evidence items.
+import { createHash } from "node:crypto";
+import { docsDirsOf } from "../docs-paths";
+import { codeReviewDocFileName, reqBaseFromRequirementDoc } from "../docs-paths";
 import { CONFIG_DIR_NAME, PROTECTED_PATHS } from "../constants";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
@@ -778,4 +782,87 @@ export function makeRealisticManagerRegistry(
       ),
     getRecord: (id: string) => lookup(id),
   };
+}
+
+// ─── 227 Phase 5: completion-gate evidence fixture ───────────────────────────
+
+/** The verdict anchors a real `/pipeline-init` review spec ships. */
+const REVIEW_VERDICT_SPEC = [
+  "---",
+  "rules:",
+  '  path: "{reviewDir}/*"',
+  "  groups:",
+  "    - name: conclusion",
+  "      ruleMode: and",
+  "      rules:",
+  "        - type: fileContentPattern",
+  "          runtime: verdict",
+  "          patterns:",
+  '            - "结论\\s*[:：]\\s*[*_]{0,2}(不通过|通过)[*_]{0,2}"',
+  '            - "Verdict\\s*[:：]\\s*[*_]{0,2}(PASS|FAIL)[*_]{0,2}"',
+  "---",
+  "验证结论。",
+].join("\n");
+
+/**
+ * 227 Phase 5: seed the five completion-gate evidence items for the VISITED
+ * delivery stages (develop / review / fix):
+ * - a valid summary artifact per visited stage (JSON frontmatter + hash);
+ * - for a visited review, a fresh PASS report of THIS round plus the verdict
+ *   anchors it is parsed with.
+ */
+export async function seedCompletionEvidence(
+  config: PipelineConfig,
+  meta: SessionMeta,
+): Promise<void> {
+  const root = config.projectRoot;
+  const visited = new Set(meta.stageVisitOrder ?? (meta.currentStage ? [meta.currentStage] : []));
+  const delivery: PipelineStage[] = (["develop", "review", "fix"] as PipelineStage[]).filter((stage) =>
+    visited.has(stage),
+  );
+
+  meta.summaries = { ...(meta.summaries ?? {}) };
+  for (const stage of delivery) {
+    if (meta.summaries[stage]?.status === "valid") continue;
+    const dir = path.join(root, ".pi", "audit", meta.pipelineId ?? "pipe");
+    await mkdir(dir, { recursive: true });
+    const file = path.join(dir, `${stage}_completion_summary.md`);
+    const content = `---\n${JSON.stringify({ stage, pipelineId: meta.pipelineId ?? "pipe" })}\n---\n# ${stage} summary\n`;
+    await writeFile(file, content, "utf-8");
+    meta.summaries[stage] = { path: file, hash: createHash("sha256").update(content).digest("hex"), status: "valid" };
+  }
+
+  if (!delivery.includes("review")) return;
+  await seedReviewPassEvidence(config, meta);
+}
+
+/**
+ * 227 Phase 5: seed ONLY the review PASS evidence (fresh report of THIS round +
+ * the verdict anchors). Used by tests that already provide their own summary.
+ */
+export async function seedReviewPassEvidence(
+  config: PipelineConfig,
+  meta: SessionMeta,
+): Promise<void> {
+  const root = config.projectRoot;
+  const specDir = path.join(root, ".pi", "references", "review_spec");
+  await mkdir(specDir, { recursive: true });
+  await writeFile(path.join(specDir, "verify.md"), REVIEW_VERDICT_SPEC, "utf-8");
+
+  const index = meta.reviewRound?.index ?? 1;
+  const stageStartTime = meta.stageStartTime ?? Date.now();
+  meta.reviewRound = {
+    index,
+    stageStartTime,
+    enteredAt: stageStartTime,
+    pipelineId: meta.pipelineId ?? "pipe",
+  };
+  const reviewDir = path.join(root, docsDirsOf(config).reviewDir);
+  await mkdir(reviewDir, { recursive: true });
+  const name = codeReviewDocFileName(reqBaseFromRequirementDoc(meta.requirementDoc ?? ""), index);
+  await writeFile(
+    path.join(reviewDir, name),
+    "# Code Review\n\n## Verdict\n\n**Verdict: PASS**\n",
+    "utf-8",
+  );
 }

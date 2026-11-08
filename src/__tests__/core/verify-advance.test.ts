@@ -1,22 +1,22 @@
 import { describe, it, expect, beforeAll } from "bun:test";
 import { applyVerifyPass, applyVerifyFail, isConfigError, autoAdvanceAfterVerify } from "../../core/verify-advance";
 import { consumePendingSpawns } from "../../utils/subagent-rpc";
-import { makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
+import { seedCompletionEvidence, makeTestConfig, makeTestMeta, createMockCtx } from "../helpers";
 import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { initAuditLog, getDateAuditFileName, __resetAuditDirPath } from "../../utils/auditLog";
-import type { SessionMeta, PipelineStage } from "../../types";
+import type { PipelineConfig, SessionMeta, PipelineStage } from "../../types";
 import { createPipelineUI, STAGE_STATUS_KEY } from "../../core/pipeline-ui";
 import { auditLogFileFor } from "../helpers";
 
 const TMP = join(tmpdir(), "pi-verify-advance-test-" + Date.now());
 
-function createCtx(meta: SessionMeta) {
+function createCtx(meta: SessionMeta, configOverride?: PipelineConfig) {
   const updates: SessionMeta[] = [];
   const notifications: string[] = [];
   const statusCalls: { key: string; text: string }[] = [];
-  const config = makeTestConfig(); // output.pipelineStage: true
+  const config = configOverride ?? makeTestConfig(); // output.pipelineStage: true
   const pipelineUI = createPipelineUI(config);
   return {
     session: {
@@ -39,6 +39,9 @@ function createCtx(meta: SessionMeta) {
       },
     },
     pipelineUI,
+    // 227 Phase 5: `VerifyAdvanceCtx.config` is a REQUIRED member (the
+    // completion gate reads the project root / docs dirs from it).
+    config,
     updates,
     notifications,
     statusCalls,
@@ -1007,6 +1010,8 @@ describe("Phase 0 (169) P1: applyVerifyPass visitOrder append", () => {
       loopCycleCount: 0,
     });
     const ctx = createCtx(meta);
+    // 227 Phase 5: the completion gate requires the five evidence items.
+    await seedCompletionEvidence(ctx.config, meta);
     const sharedResult = {
       structuredResult: { failures: [] },
       ruleMissing: [],
@@ -1155,7 +1160,8 @@ describe("Phase 2 / 179 (G8): chain-terminal owner wake", () => {
       pipelineId: "pipe-g8-terminal",
       stageVisitOrder: ["clarify", "plan", "develop", "review"],
     });
-    const ctx = createCtx(meta);
+    const ctx = createCtx(meta, config);
+    await seedCompletionEvidence(config, meta);
     const wakeCalls: string[] = [];
     (ctx as any).pi = { sendUserMessage: (msg: string) => { wakeCalls.push(msg); } };
 
@@ -1178,7 +1184,8 @@ describe("Phase 2 / 179 (G8): chain-terminal owner wake", () => {
       stageVisitOrder: ["clarify", "plan", "develop", "review"],
       pendingSpawns: { develop: { agentName: "develop-agent", requestedAt: Date.now(), attempts: 0 } },
     });
-    const ctx = createCtx(meta);
+    const ctx = createCtx(meta, config);
+    await seedCompletionEvidence(config, meta);
     const wakeCalls: string[] = [];
     (ctx as any).pi = { sendUserMessage: (msg: string) => { wakeCalls.push(msg); } };
 
@@ -1201,7 +1208,8 @@ describe("Phase 2 / 179 (G8): chain-terminal owner wake", () => {
       pipelineId: "pipe-g8-nopi",
       stageVisitOrder: ["clarify", "plan", "develop", "review"],
     });
-    const ctx = createCtx(meta);
+    const ctx = createCtx(meta, config);
+    await seedCompletionEvidence(config, meta);
     // No ctx.pi
 
     await autoAdvanceAfterVerify(
@@ -1224,7 +1232,8 @@ describe("Phase 2 / 179 (G8): chain-terminal owner wake", () => {
       stageVisitOrder: ["clarify", "plan", "develop", "review"],
       confirmGateReask: { stage: "plan", count: 2 },
     });
-    const ctx = createCtx(meta);
+    const ctx = createCtx(meta, config);
+    await seedCompletionEvidence(config, meta);
     const wakeCalls: string[] = [];
     (ctx as any).pi = { sendUserMessage: (msg: string) => { wakeCalls.push(msg); } };
 

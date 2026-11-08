@@ -21,7 +21,7 @@ import { createAgentSettled } from "../../core/agent-settled";
 import { createPipelineUI } from "../../core/pipeline-ui";
 import { __resetAutoJobLockForTests } from "../../core/auto-pipeline/config-overlay";
 import { initAuditLog, __resetAuditDirPath } from "../../utils/auditLog";
-import { createMockCtx, makeTestConfig, makeTestMeta } from "../helpers";
+import { createMockCtx, makeTestConfig, makeTestMeta, seedCompletionEvidence } from "../helpers";
 import type { PipelineConfig, SessionMeta } from "../../types";
 
 const PASS_RESULT = {
@@ -62,6 +62,8 @@ describe("human completion paths", () => {
   it("tool advance to completed releases once", async () => {
     config.stages["review"] = { ...config.stages["review"]!, nextStage: "completed" };
     const meta = terminalMeta();
+    // 227 Phase 5: the completion gate needs the five evidence items.
+    await seedCompletionEvidence(config, meta);
     const ctx = createMockCtx(meta);
 
     const result = (await createStageAdvancer(config).execute({}, ctx as never)) as {
@@ -77,7 +79,12 @@ describe("human completion paths", () => {
 
   it("hook auto-advance to completed releases once", async () => {
     const meta = terminalMeta();
+    // 227 Phase 5: the completion gate needs the five evidence items.
+    await seedCompletionEvidence(config, meta);
     const ctx = createMockCtx(meta);
+    // VerifyAdvanceCtx.config is required by the completion gate (production
+    // hook contexts carry it; the mock must be told which project to read).
+    (ctx as unknown as { config?: PipelineConfig }).config = config;
     meta.currentStage = "review";
 
     await autoAdvanceAfterVerify(
@@ -115,6 +122,8 @@ describe("human completion paths", () => {
   it("the settle fallback is a no-op after a tool advance already cleaned up", async () => {
     config.stages["review"] = { ...config.stages["review"]!, nextStage: "completed" };
     const meta = terminalMeta();
+    // 227 Phase 5: the completion gate needs the five evidence items.
+    await seedCompletionEvidence(config, meta);
     const ctx = createMockCtx(meta);
 
     await createStageAdvancer(config).execute({}, ctx as never);

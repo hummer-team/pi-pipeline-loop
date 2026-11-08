@@ -1690,6 +1690,11 @@ export interface StageStatSnapshot {
   verifyAttempts: number;
   /** Confirm-gate rejections recorded during the stage visit. */
   confirmRejections: number;
+  /**
+   * 227 Phase 5 (D-15): the stage ENTRY clock of this visit. The completion
+   * gate's fix-commit reconciliation uses it as the ONLY trustworthy baseline.
+   */
+  startedAt?: number;
 }
 
 /**

@@ -25,7 +25,8 @@ import { markPipelineAborted } from "../../core/flow-state";
 import { createUsageRecorder } from "../../core/usage-recorder";
 import { createPipelineUI } from "../../core/pipeline-ui";
 import { initAuditLog, __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
-import { makeTestConfig, makeTestMeta, auditLogFileFor } from "../helpers";
+import { makeTestConfig, makeTestMeta, auditLogFileFor, seedReviewPassEvidence } from "../helpers";
+import { createHash } from "node:crypto";
 import type { PipelineConfig, PipelineStage, SessionMeta } from "../../types";
 
 // ─── Harness ──────────────────────────────────────────────────────────────────
@@ -153,9 +154,8 @@ describe("210 Phase 4 audit enrichment: tool advance", () => {
     const root = await setupRoot("tool-completed");
     const config = makeTestConfig({ projectRoot: root });
 
-    const summaryPath = join(root, "fix-summary.md");
-    await writeFile(summaryPath, "---\ncommit_ids: [abc1234, def5678]\n---\n# Fix\n", "utf-8");
-
+    // 227 Phase 5: this case pins the AGGREGATE, so it stays on stages that
+    // carry no delivery evidence (develop/review/fix would open the gate).
     const enteredAt = Date.now() - 1200;
     const startedAt = Date.now() - 90_000;
     const meta = makeTestMeta({
@@ -167,11 +167,9 @@ describe("210 Phase 4 audit enrichment: tool advance", () => {
       verifyAttempts: 1,
       confirmRejections: 2,
       loopCycleCount: 1,
-      stageVisitOrder: ["clarify", "plan", "develop", "review", "fix", "awaiting_human"],
+      stageVisitOrder: ["clarify", "plan", "awaiting_human"],
       stageStats: { clarify: { durationMs: 10, verifyAttempts: 0, confirmRejections: 0 } },
-      // Historical-stage summary: the tool hash-check only guards the CURRENT
-      // stage's summary, while the aggregate reads ALL recorded summaries.
-      summaries: { fix: { path: summaryPath, hash: "h", status: "valid" } },
+      summaries: {},
     });
     const ctx = makeCtx(meta, config);
 
@@ -191,7 +189,7 @@ describe("210 Phase 4 audit enrichment: tool advance", () => {
     // stays visible via stageVisitOrder.
     expect(f.loopCycleCount).toBe("0");
     // Fresh meta already contains the terminal "completed" visit appended by the commit.
-    expect(f.stageVisitOrder).toBe("clarify,plan,develop,review,fix,awaiting_human,completed");
+    expect(f.stageVisitOrder).toBe("clarify,plan,awaiting_human,completed");
 
     // Aggregate keys (requirement 5.5 table) — the LAST stage's duration is
     // measured from the pre-advance entry clock.
@@ -205,8 +203,8 @@ describe("210 Phase 4 audit enrichment: tool advance", () => {
     expect(f.confirmRejections).toBe("2");
     expect(f.requirementDoc).toBe("docs/design/77_Config.md");
     expect(f.planDoc).toBe("docs/design/77_Config_Plan.md");
-    expect(f.summaryPaths).toBe(summaryPath);
-    expect(f.commitIds).toBe("abc1234,def5678");
+    expect(f.summaryPaths).toBe("");
+    expect(f.commitIds).toBe("");
     expect(f.auditPath!.length).toBeGreaterThan(0);
     expect(f.auditPath).toContain(meta.pipelineId);
 
@@ -254,7 +252,8 @@ describe("210 Phase 4 audit enrichment: hook auto-advance", () => {
     const root = await setupRoot("hook-completed");
     const config = makeTestConfig({ projectRoot: root });
     const summaryPath = join(root, "review-summary.md");
-    await writeFile(summaryPath, "---\n{\n  \"commit_ids\": [\"9aa11bb\"]\n}\n---\n", "utf-8");
+    const summaryContent = "---\n{\n  \"commit_ids\": [\"9aa11bb\"]\n}\n---\n";
+    await writeFile(summaryPath, summaryContent, "utf-8");
 
     const enteredAt = Date.now() - 1100;
     const startedAt = Date.now() - 80_000;
@@ -264,10 +263,18 @@ describe("210 Phase 4 audit enrichment: hook auto-advance", () => {
       requirementDoc: "docs/design/77_Config.md",
       stageStartTime: enteredAt,
       pipelineStartedAt: startedAt,
-      stageVisitOrder: ["clarify", "plan", "develop", "review"],
+      stageVisitOrder: ["clarify", "plan", "review"],
       stageStats: { plan: { durationMs: 20, verifyAttempts: 1, confirmRejections: 0 } },
-      summaries: { review: { path: summaryPath, hash: "h", status: "valid" } },
+      summaries: {
+        review: {
+          path: summaryPath,
+          hash: createHash("sha256").update(summaryContent).digest("hex"),
+          status: "valid",
+        },
+      },
     });
+    // 227 Phase 5: a fresh PASS report of THIS review round.
+    await seedReviewPassEvidence(config, meta);
     const ctx = makeCtx(meta, config);
 
     await autoAdvanceAfterVerify(
@@ -286,7 +293,7 @@ describe("210 Phase 4 audit enrichment: hook auto-advance", () => {
     expect(f.summaryPaths).toBe(summaryPath);
     expect(f.commitIds).toBe("9aa11bb");
     // Correct behavior: the terminal commit appends "completed" to the visit order.
-    expect(f.stageVisitOrder).toBe("clarify,plan,develop,review,completed");
+    expect(f.stageVisitOrder).toBe("clarify,plan,review,completed");
     expect(f.auditPath).toContain(meta.pipelineId);
 
     await rm(root, { recursive: true, force: true });
@@ -523,7 +530,8 @@ describe("210 review issue 3: tool-mode verify exit evidence", () => {
     const root = await setupRoot("tool-verify-terminal");
     const config = makeTestConfig({ projectRoot: root });
     const summaryPath = join(root, "review-summary.md");
-    await writeFile(summaryPath, "---\n{\n  \"commit_ids\": [\"9aa11bb\"]\n}\n---\n", "utf-8");
+    const summaryContent = "---\n{\n  \"commit_ids\": [\"9aa11bb\"]\n}\n---\n";
+    await writeFile(summaryPath, summaryContent, "utf-8");
 
     const enteredAt = Date.now() - 1100;
     const startedAt = Date.now() - 80_000;
@@ -533,10 +541,18 @@ describe("210 review issue 3: tool-mode verify exit evidence", () => {
       requirementDoc: "docs/design/77_Config.md",
       stageStartTime: enteredAt,
       pipelineStartedAt: startedAt,
-      stageVisitOrder: ["clarify", "plan", "develop", "review"],
+      stageVisitOrder: ["clarify", "plan", "review"],
       stageStats: { plan: { durationMs: 20, verifyAttempts: 1, confirmRejections: 0 } },
-      summaries: { review: { path: summaryPath, hash: "h", status: "valid" } },
+      summaries: {
+        review: {
+          path: summaryPath,
+          hash: createHash("sha256").update(summaryContent).digest("hex"),
+          status: "valid",
+        },
+      },
     });
+    // 227 Phase 5: a fresh PASS report of THIS review round.
+    await seedReviewPassEvidence(config, meta);
     const ctx = makeCtx(meta, config);
     await feedUsage(meta);
 

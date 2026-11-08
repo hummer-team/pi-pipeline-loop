@@ -1094,6 +1094,8 @@ export function createAgentSettled(
         const outcome = await autoAdvanceAfterVerify(config, ctxWithPi, meta, fromStage, toStage, sharedResult, ui, {
           skipPassAudit: true,
           caller: "auto_advance",
+          // 227 Phase 5: the completion gate reconciles fix commits through git.
+          ...(verifyOptions?.execFn ? { execFn: verifyOptions.execFn } : {}),
         });
         if (!outcome.advanced) return;
         // Phase 4 (169) P2-6 fix: after autoAdvance, if we landed on completed, invoke
@@ -1225,6 +1227,8 @@ export function createAgentSettled(
         // false "advanced" claim and the self-exciting wake out of the hook.
         const outcome = await autoAdvanceAfterVerify(config, ctxWithPi, meta, fromStage, toStage, sharedResult, ui, {
           caller: "auto_advance",
+          // 227 Phase 5: the completion gate reconciles fix commits through git.
+          ...(verifyOptions?.execFn ? { execFn: verifyOptions.execFn } : {}),
         });
         if (!outcome.advanced) return;
         // Phase 4 (169) P2-6 fix: after autoAdvance, if we landed on completed, invoke

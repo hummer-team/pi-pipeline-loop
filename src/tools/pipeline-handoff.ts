@@ -5,7 +5,7 @@
  * model switching, and audit logging.
  */
 
-import type { PipelineConfig, Tool, SessionMeta, PipelineStage } from "../types";
+import type { PipelineConfig, Tool, SessionMeta, PipelineStage, ExecFn } from "../types";
 import { writeAuditLog, safeWriteAuditLog } from "../utils/auditLog";
 import { createPipelineUI } from "../core/pipeline-ui";
 import { freezeAndPrompt } from "../core/flow-state";
@@ -34,6 +34,8 @@ import { describeInvalidNextStage } from "../utils/guard-conflict-report";
 import { gateStageToolCall } from "../core/stage-executor/tool-consumption";
 import { boundActiveRun, commitBoundStageExit } from "../core/stage-executor/transition-commit";
 import { computeResultKey } from "../core/stage-executor/run-state";
+// 227 Phase 5 (D-11/D-12): the five-evidence completion gate.
+import { enforceCompletionGate } from "../core/auto-pipeline/completion-gate";
 // 227 Phase 2 (D-8): every design-review entry rides the domain seam.
 import {
   authoriseDesignReviewEntry,
@@ -58,7 +60,10 @@ import {
  * @param config - The pipeline configuration
  * @returns A Tool object for the "pipeline_handoff" tool
  */
-export function createPipelineHandoff(config: PipelineConfig): Tool {
+export function createPipelineHandoff(
+  config: PipelineConfig,
+  deps?: { execFn?: ExecFn },
+): Tool {
   const ui = createPipelineUI(config);
   return {
     name: "pipeline_handoff",
@@ -288,6 +293,21 @@ export function createPipelineHandoff(config: PipelineConfig): Tool {
             });
           }
           return { success: false, error: drEntry.message, message: drEntry.message };
+        }
+      }
+
+      // 227 Phase 5 (D-11/D-12): the terminal handoff is gated on FIVE hard
+      // evidence items — checked BEFORE the visit is counted.
+      if (nextStage === "completed") {
+        const gate = await enforceCompletionGate({
+          config,
+          meta: ctx.session.getMeta() ?? meta,
+          session: ctx.session as never,
+          ...(deps?.execFn ? { execFn: deps.execFn } : {}),
+          runtimeCtx: ctx,
+        });
+        if (!gate.allowed) {
+          return { success: false, error: gate.message, message: gate.message };
         }
       }
 
