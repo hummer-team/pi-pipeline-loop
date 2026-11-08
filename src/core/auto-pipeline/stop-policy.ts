@@ -226,6 +226,13 @@ export async function stopAutoDocOnHardFailure(args: {
   auditEvent: string;
   /** Extra audit fields (all values are already `k=v` scalars). */
   auditExtras?: Record<string, string>;
+  /**
+   * 227 review fix (issue 2): explicit role evidence for callers whose ctx no
+   * longer carries `_ctx` (e.g. `CoordinatorContext`). `true` = child (forward
+   * the stop through the shared meta), `false` = owner, `undefined` = detect
+   * from `ctx` as before.
+   */
+  isChild?: boolean;
 }): Promise<"stopped" | "forwarded_to_owner" | "no_auto_context"> {
   const { config, meta, reason, auditEvent } = args;
   const verdict: HardStopVerdict = { kind: "hard", stopReason: reason };
@@ -236,7 +243,7 @@ export async function stopAutoDocOnHardFailure(args: {
     ...(args.auditExtras ?? {}),
   };
 
-  if (isChildContext(args.ctx)) {
+  if (args.isChild ?? isChildContext(args.ctx)) {
     writeStopPending(args.ctx, meta, reason);
     await safeWriteAuditLog(auditEvent, { ...auditBase, result: "forwarded_to_owner" }, "warn");
     return "forwarded_to_owner";

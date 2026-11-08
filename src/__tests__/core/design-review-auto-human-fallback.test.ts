@@ -64,4 +64,28 @@ describe("227 P2: applyAutoHumanFallback", () => {
     const result = await applyAutoHumanFallback(ctx, meta, "revise-plan");
     expect(result).toEqual({ status: "handled", action: "pending", reason: "auto_revise_plan" });
   });
+
+  it("227 review fix 2: a child context FORWARDS the stop (never finalizes the job)", async () => {
+    // `CoordinatorContext` drops `_ctx`, so the explicit `roleIsChild` evidence
+    // is the ONLY thing that keeps a child from executing the owner transaction.
+    const meta = autoMeta();
+    const patches: Array<Partial<SessionMeta>> = [];
+    const ctx = {
+      config: { projectRoot: "/nonexistent-227-fallback" },
+      session: {
+        getMeta: () => meta,
+        updateMeta: (patch: Partial<SessionMeta>) => {
+          patches.push(patch);
+          return meta;
+        },
+      },
+      roleIsChild: true,
+    } as never;
+
+    const result = await applyAutoHumanFallback(ctx, meta, "stop");
+
+    expect(result).toEqual({ status: "handled", action: "pending", reason: "design_review_manual_fail" });
+    expect(patches).toHaveLength(1);
+    expect(patches[0]?.autoJobStopPending).toMatchObject({ reason: "design_review_manual_fail" });
+  });
 });

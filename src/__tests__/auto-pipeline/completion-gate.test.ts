@@ -250,6 +250,23 @@ describe("227 P5: evidence ⑤ — delivery summaries", () => {
     if (!result.ok) expect(result.failure.code).toBe("summary_not_valid");
   });
 
+  it("227 review fix 3: a summary without a recorded hash is not proof", async () => {
+    // `checkStageSummaryHash` returns `undefined` for a summary that carries no
+    // path/hash — the strict evidence set must reject it, never silently pass.
+    const env = await makeEnv({ visit: ["clarify", "plan", "develop", "review"], summaries: false });
+    const content = "---\n{}\n---\n# develop\n";
+    const summaryPath = await summaryFile(env.root, "develop", content);
+    env.meta.summaries = { develop: { path: summaryPath, hash: "", status: "valid" } as never };
+    await seedReviewPassEvidence(env.config, env.meta);
+
+    const result = await evaluateCompletionGate({ config: env.config, meta: env.meta, session: env.session });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.failure.code).toBe("summary_not_valid");
+      expect(result.failure.detail).toContain("no recorded path/hash");
+    }
+  });
+
   it("a pending summary blocks the human track but is auto-validated in an auto job", async () => {
     const human = await makeEnv({ visit: ["clarify", "plan", "develop"], summaries: false });
     const content = "---\n{}\n---\n# develop\n";

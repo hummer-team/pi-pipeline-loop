@@ -194,6 +194,14 @@ export interface CoordinatorContext {
    */
   actor?: DesignReviewActorInput;
   /**
+   * 227 review fix (issue 2): explicit OWNER/CHILD evidence for owner-only
+   * transactions. `CoordinatorContext` deliberately drops `_ctx`, so
+   * `detectSessionRole` cannot re-derive the role here and would silently
+   * degrade a child to owner. The runtime-context builder fills this from the
+   * entry ctx; absent = "no evidence" (owner is the conservative default).
+   */
+  roleIsChild?: boolean;
+  /**
    * 213 Phase 0 (D18): the HOST-DECLARED interactive capability forwarded by
    * the runtime-context builder. Display capability only — never an authority.
    * Absent (undefined) = "this host does not declare it", which keeps the

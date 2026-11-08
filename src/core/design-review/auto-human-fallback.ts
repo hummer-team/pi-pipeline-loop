@@ -48,6 +48,10 @@ export async function applyAutoHumanFallback(
     meta,
     reason: "design_review_manual_fail",
     auditEvent: "design_review_auto_human_stop",
+    // 227 review fix (issue 2): `CoordinatorContext` drops `_ctx`, so role
+    // detection would degrade a CHILD to owner and finalize the job in the
+    // child process. Forward the entry's explicit role evidence instead.
+    isChild: ctx.roleIsChild,
   });
   return { status: "handled", action: "pending", reason: "design_review_manual_fail" };
 }

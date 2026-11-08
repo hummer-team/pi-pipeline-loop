@@ -158,7 +158,16 @@ export async function evaluateCompletionGate(
       return fail("summary_not_valid", `stage "${stage}" has no summary artifact.`);
     }
     const check = checkStageSummaryHash(meta, stage);
-    if (check && !check.match) {
+    if (check === undefined) {
+      // 227 review fix (issue 3): a summary without `path`/`hash` proves
+      // NOTHING about the current visit — the gate is a strict evidence set,
+      // never an "unverifiable ⇒ allow" path.
+      return fail(
+        "summary_not_valid",
+        `stage "${stage}" summary has no recorded path/hash — it cannot be verified for this visit.`,
+      );
+    }
+    if (!check.match) {
       return fail("summary_not_valid", `stage "${stage}" summary hash mismatch (modified manually).`);
     }
     if (stage === "review") {

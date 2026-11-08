@@ -2086,7 +2086,7 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 | clarify 完成标记 | job 指令只要求自答并写 `答：`（不写 marker）；完成标记只由派发 `full-und?` 的那一轮写入。收尾事实（226）：`full-und?` **成功派发后**落盘 `clarifyFinalisationRound` —— 下一次 settle 走 `await-finalisation`，**不再派发**，把 settle 交还给 marker 门禁。同 agent 孪生在飞时该轮被 `pendingSpawns` **排队**：defer 时刻只记 `clarifyFinalisationQueuedRound`（同样触发 `await-finalisation`），队列真正派发成功后才提升为 `clarifyFinalisationRound`；若队列条目丢失，marker 门禁回滚预留并重派，绝不以 `clarify_marker_missing` 结案。未产出按 `clarify.onExhausted` 分流：`stop`（默认）→ 文档失败 `clarify_marker_missing`，`self-confirm` → 记 `clarifyFallbackUsed` 并经统一派发通道（`dispatchClarifyRound`）强制再派一次 `full-und?`（派发失败先复位该标记再走 `clarify_dispatch_failed` 失败路由），再次未产出 → `clarify_marker_missing` |
 | plan/review confirm | 由 overlay 写 `confirm.mode: auto`，既有 confirm 守卫（先读 config 再决定是否弹窗）因此不再弹窗 |
 | design-review 入口授权 | 第 4 参 `{ autoPipeline: { jobId } }`：保留 child 拒绝与前置校验，跳过 TUI 检测与确认，审计 `authorised_auto` |
-| manual FAIL | v1 只允许 `designReview.mode: auto`，FAIL 走 `auto-revise`（不伪造人工裁决） |
+| manual FAIL | auto job 下 `manual` FAIL **无菜单**：`revise-plan` 声明按 `onFail`（`auto-revise` 修订 / `stop` 硬停），`request-human` 声明一律 **stop-and-report**（`design_review_manual_fail`）；绝不伪造人工裁决（见 §19.10） |
 | 写/命令对话框 | auto 活跃时：受保护路径、危险命令一律 `block`（`ask` 也**不放行**）；`whitelist_miss` 按解析后的模式：`allow` 放行，`deny`/`ask` 拦截 |
 | 冻结决策 | `byReason[reason]` → `onFreeze` → `stop-and-report`；`stop-and-report` **永不**回落 210 provider 链；`maxAutoResumes` 用尽即停；`set_budget` 直接按取消处理（不追加预算）；auto 活跃但 job 文件/锁记录不可读（`readActiveJobContext` 为空）时按 `stopReason: job_drift` 收尾，同样不回落 provider |
 

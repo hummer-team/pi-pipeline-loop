@@ -118,7 +118,11 @@ export function createAgentSettled(
         stageStartTime: rawMeta?.stageStartTime ?? 0,
         visitCount: rawMeta?.stageVisitOrder?.length ?? 0,
       };
-      try {
+      // 227 review fix (issue 1): capture the job-liveness fact BEFORE any seam
+      // runs. A lock held here but gone in the `finally` means THIS settle
+      // finalized the document/job — a re-prompt would restart a stopped doc.
+      const jobActiveAtEntry = isAutoJobActive();
+
       // Phase 1 (197): refresh audit routing context on every hook entry
       setAuditPipelineContext(rawMeta?.pipelineId);
 
@@ -145,6 +149,12 @@ export function createAgentSettled(
       if (rawMeta && (await maybeEnterPendingDesignReview(ctx, config, rawMeta))) return;
       if (rawMeta && (await handleAutoSettle(ctx, config, rawMeta))) return;
 
+      // 227 review fix (issue 1): the re-prompt wrapper starts HERE — after
+      // every terminal seam above. Those seams can finalize the document/job
+      // (or hand it to the owner); wrapping them would send "keep going" after
+      // a stop-and-report. Hard stops raised INSIDE the body are additionally
+      // short-circuited by the job-liveness snapshot in the `finally`.
+      try {
       // 221 Phase 2: a HUMAN pipeline that reached `completed` releases its
       // session resources once (auto jobs are excluded inside the helper). This
       // is the fallback for flow-state skip/choose_stage paths that bypass the
@@ -1242,10 +1252,13 @@ export function createAgentSettled(
       } finally {
         // 227 Phase 4 (D-3): bounded owner re-prompt for a silent settle. The
         // helper is fail-open (audited) and inert on the human track.
+        // 227 review fix (issue 1): `jobActiveAtEntry` makes a settle that
+        // finalized the job (hard stop / completion) non-repromptable.
         await maybeAutoAskReprompt({
           ctx: ctx as unknown as FinalizeCtx,
           config,
           before: repromptBefore,
+          jobActiveAtEntry,
         }).catch(async (err: unknown) => {
           await writeAuditLog("auto_ask_reprompt_error", {
             pipelineId: rawMeta?.pipelineId ?? "",

@@ -197,4 +197,26 @@ describe("227 P4: maybeAutoAskReprompt wiring", () => {
     expect(audits.some((a) => a.event === "auto_ask_reprompt_exhausted")).toBe(true);
     expect(audits.some((a) => a.event === "auto_ask_reprompt")).toBe(false);
   });
+
+  it("227 review fix 1: a settle that finalized the job never re-prompts", async () => {
+    // The lock was held when the settle started but the sidecar/lock is gone
+    // now (hard stop / completion finalized the document) — stop-and-report
+    // must stay silent instead of restarting the stopped document.
+    const meta = autoMeta();
+    const sent: string[] = [];
+    const ctx = createMockCtx(meta, {
+      pi: { sendUserMessage: (msg: string) => sent.push(msg) },
+    });
+
+    await maybeAutoAskReprompt({
+      ctx: ctx as never,
+      config: { stages: {}, projectRoot: "/nonexistent-227-ask" } as never,
+      before: BEFORE,
+      jobActiveAtEntry: true,
+    });
+
+    expect(sent).toHaveLength(0);
+    expect(meta.autoAskReprompt).toBeUndefined();
+    expect(audits.some((a) => a.event === "auto_ask_reprompt_skipped")).toBe(true);
+  });
 });

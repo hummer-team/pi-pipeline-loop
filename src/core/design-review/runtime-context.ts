@@ -91,6 +91,33 @@ function isFn(value: unknown): value is (...args: unknown[]) => unknown {
 
 /**
  * 213 Phase 0 (D17-③, round-8 review issue 5): the ONE shared read of the
+ * caller's role from a raw entry ctx. Unreadable / absent evidence returns
+ * `undefined` ("no identity evidence") — never a guessed role.
+ *
+ * 227 review fix (issue 2): the SAME read also supplies the coordinator's
+ * explicit `roleIsChild` (owner-only transactions cannot re-derive it).
+ */
+function detectRoleEvidence(roleCtx: unknown): ReturnType<typeof detectSessionRole> | undefined {
+  if (roleCtx === undefined || roleCtx === null) return undefined;
+  try {
+    return detectSessionRole(roleCtx as Parameters<typeof detectSessionRole>[0]);
+  } catch {
+    // Detection failure: leave evidence ABSENT (fail closed).
+    return undefined;
+  }
+}
+
+/** Map detected role evidence onto the display actor shape. */
+function actorFromRole(role: ReturnType<typeof detectSessionRole>): DesignReviewActorInput {
+  return {
+    isChild: role.isChild,
+    sessionFile: role.sessionFile || undefined,
+    ...(role.parentSession ? { parentSessionFile: role.parentSession } : {}),
+  };
+}
+
+/**
+ * 213 Phase 0 (D17-③, round-8 review issue 5): the ONE shared read of the
  * caller's actor identity from a raw entry ctx. Display-only — the result
  * NEVER grants or removes any authority (eligibility stays in
  * `resolveDesignReviewActorEvidence` / 193 single authority). Detection
@@ -101,20 +128,8 @@ function isFn(value: unknown): value is (...args: unknown[]) => unknown {
  * semantics); the child's own file stays its identity, never an owner claim.
  */
 export function resolveDisplayActor(roleCtx: unknown): DesignReviewActorInput | undefined {
-  if (roleCtx === undefined || roleCtx === null) return undefined;
-  try {
-    const role = detectSessionRole(roleCtx as Parameters<typeof detectSessionRole>[0]);
-    // 212 Phase 0: the parent reference joins the actor evidence so a child
-    // can SPEAK FOR its owner later — it is never the child's own identity.
-    return {
-      isChild: role.isChild,
-      sessionFile: role.sessionFile || undefined,
-      ...(role.parentSession ? { parentSessionFile: role.parentSession } : {}),
-    };
-  } catch {
-    // Detection failure: leave evidence ABSENT (fail closed).
-    return undefined;
-  }
+  const role = detectRoleEvidence(roleCtx);
+  return role !== undefined ? actorFromRole(role) : undefined;
 }
 
 /**
@@ -178,7 +193,10 @@ export function createDesignReviewRuntimeContext(
   //    as NO evidence — the coordinator resolves that to "unknown" and fails
   //    closed (pending stays pending; a child NEVER gets menu/choice/advance
   //    privileges either way). ──────────────────────────────────────────────
-  const actor = resolveDisplayActor(input.roleCtx);
+  const role = detectRoleEvidence(input.roleCtx);
+  // 212 Phase 0: the parent reference joins the actor evidence so a child can
+  // SPEAK FOR its owner later — it is never the child's own identity.
+  const actor = role !== undefined ? actorFromRole(role) : undefined;
 
   // 213 Phase 0 (D18): resolve the host-declared interactive capability ONCE
   // (a function-form declaration must answer identically everywhere).
@@ -193,6 +211,9 @@ export function createDesignReviewRuntimeContext(
     ...(declaredHasUI !== undefined ? { hasUI: declaredHasUI } : {}),
     ...(hasUi ? { ui: { notify: notify ?? (() => {}), ...(select !== undefined ? { select } : {}), ...(transition !== undefined ? { transition } : {}) } } : {}),
     ...(actor !== undefined ? { actor } : {}),
+    // 227 review fix (issue 2): explicit role evidence for owner-only
+    // transactions (hard-stop ownership); absent = no evidence (owner default).
+    ...(role !== undefined ? { roleIsChild: role.isChild } : {}),
     ...(input.pi !== undefined ? { pi: input.pi } : {}),
     ...(input.spawnOverride !== undefined ? { spawnOverride: input.spawnOverride } : {}),
     ...(input.verificationResult !== undefined ? { verificationResult: input.verificationResult } : {}),
