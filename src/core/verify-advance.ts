@@ -51,6 +51,10 @@ import { recordAutoAwareStageVisit, finalizeOnSoftStop, stopAutoDocOnHardFailure
 // 227 Phase 5 (D-11/D-12): the five-evidence completion gate.
 import { enforceCompletionGate } from "./auto-pipeline/completion-gate";
 import { describeEmptyOrInvalidRuleSet } from "../utils/guard-conflict-report";
+// 229 Phase 7 (F7/问题 6): the fix-report write-whitelist chain deps.
+import * as fsWhitelist from "node:fs/promises";
+import * as pathWhitelist from "node:path";
+import { docsDirsOf, codeReviewDocFileName, reqBaseFromRequirementDoc } from "../docs-paths";
 // 227 Phase 2 (D-8): every design-review entry rides the domain seam.
 import {
   authoriseDesignReviewEntry,
@@ -438,6 +442,37 @@ async function emitVerifyStageExitEvidence(
  *
  * @returns VerifyPassReturn when returnResult=true; void when returnResult=false
  */
+/**
+ * 229 Phase 7 (F7/问题 6): the fix-stage review-report write-whitelist check.
+ * `null` when no baseline was captured at review→fix routing or the report is
+ * unreadable (a missing baseline NEVER fabricates a violation); an actual
+ * protected-body change returns the violation detail.
+ */
+async function checkFixReportEditWhitelist(
+  ctx: unknown,
+  meta: SessionMeta,
+  config: PipelineConfig,
+): Promise<string | null> {
+  void ctx;
+  const baselineHash = meta.reviewReportHashAtFixStart;
+  if (baselineHash === undefined) return null;
+  const { verifyFixReportEditsAgainstHash } = await import("./verifiers/fix-report-edit-verifier");
+  const round = meta.reviewRound?.index ?? 1;
+  const reportPath = pathWhitelist.join(
+    config.projectRoot,
+    docsDirsOf(config).reviewDir,
+    codeReviewDocFileName(reqBaseFromRequirementDoc(meta.requirementDoc ?? ""), round),
+  );
+  let content: string;
+  try {
+    content = await fsWhitelist.readFile(reportPath, "utf-8");
+  } catch {
+    return null;
+  }
+  const verdict = verifyFixReportEditsAgainstHash({ baselineHash, current: content });
+  return verdict.ok ? null : verdict.violations.join("; ");
+}
+
 export async function applyVerifyPass(
   ctx: VerifyAdvanceCtx,
   meta: SessionMeta,
@@ -642,6 +677,30 @@ export async function applyVerifyPass(
       ...designReviewEntryPatch(drEntry, meta),
     };
 
+    // 229 Phase 7 (F7/问题 6): the fix stage's REVIEW REPORT write-whitelist
+    // chain (refused-bound-exit family, BEFORE any commit): an edit outside
+    // the allowed fields refuses the advance + audits fix_report_edit_violation.
+    if (stageName === "fix") {
+      const whitelistCheck = await checkFixReportEditWhitelist(ctx, meta, ctx.config);
+      if (whitelistCheck !== null) {
+        await safeWriteAuditLog("fix_report_edit_violation", {
+          pipelineId: meta.pipelineId,
+          stage: "fix",
+          detail: whitelistCheck,
+        }, "warn");
+        if (opts.returnResult) {
+          return {
+            success: false,
+            passed: true,
+            message: "Fix report write-scope violation: only 是否修复/状态 and 证据 lines may change. Nothing advanced.",
+            verifyResult: verifyResult?.verifyResult ?? null,
+            blockReason: "fix_report_edit_violation" as StageExitBlockReason,
+          };
+        }
+        return;
+      }
+    }
+
     // 194 Phase 3 (C5): a bound stage exit is ONE strict commit — transition,
     // terminalConsumed and the `applied` record land together, and nothing is
     // reported or dispatched unless the commit persisted.
@@ -663,14 +722,13 @@ export async function applyVerifyPass(
           }
         : {}),
     });
+
     if (boundExit.status === "refused") {
       await safeWriteAuditLog("transition_commit", {
         action: "bound_exit_refused",
         stage: stageName,
         nextStage,
         method: opts.method,
-        // 216 P1 (R2-Q2-A): the refusal stays the SINGLE truth — only the
-        // entry attribution and the machine-readable code are added.
         caller: resolveStageExitCaller(opts),
         reason: boundExit.reason,
       }, "warn");

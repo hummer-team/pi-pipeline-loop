@@ -74,6 +74,10 @@ disable-model-invocation: true
      - Non‑functional issues
      - Format, naming, style, readability concerns only
 2. Mark **Blocker**, **High**, **Medium** items as `To‑Fix` or `待修复`; LOW items require no fixes.
+3. (229) Report contract (mandatory):
+   - Every issue carries an `ID` field: `CR-<round>-<n>`; the SAME problem keeps the SAME id across rounds (never renumber — the loop's no-progress check tracks these ids)
+   - Every issue that RE-APPEARS from the previous round's report is marked `new`/`regression` in its 改进建议 (a regression MUST carry Evidence: the exact failing command/assertion the earlier round already accepted)
+   - When the review modifies the plan (a previous round's FAIL), declare your review SCOPE in the report: which plan sections/phases you inspected and received as modified (`Scope for this round: …`) — out-of-scope edits you notice are reported as `scope_violation` (severity High with section/line Evidence)
 
 ### 8.1 Review Output Directory: `{reviewDir}`
 0. **Path convention**: Never write business deliverables under `{auditDir}/` (plugin-internal artifacts only); use user-visible paths such as `{designDir}/`.

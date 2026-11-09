@@ -432,7 +432,9 @@ stage_deliverable_design-review: |
   - **MUST** write exactly `None` as the only `## Issues` entry when there are no issues (an empty Issues section is never "no issues")
   - **MUST** include a verdict line in bilingual+bold-tolerant form: `结论：(通过|不通过)` / `Verdict: (PASS|FAIL)` / `**Design Review: (PASS|FAIL)**` — bold/italic markup (`**`/`_`) tolerated
   - **MUST** provide clear reasoning for the verdict (PASS or FAIL) and actionable recommendations
-  - **MUST NOT** conclude PASS while any valid `## Issues` entry exists — issues take precedence; any real issue forces FAIL regardless of severity labels
+  - **MUST NOT** conclude PASS while a BLOCKING `## Issues` entry exists (severity Blocker or High with Evidence); `None` or only Medium/Low entries means PASS. Every issue row requires a stable `ID` (`DR-<round>-n`), a required severity, and Evidence for blocking severities; a missing severity or a Blocker/High without Evidence rejects the report as invalid
+  - **MUST** restate every injected previous-round open id in `## Issue Ledger` with a legal status (`open`/`fixed`/`accepted-risk`/`carry-over`) when the dispatch context injected previous findings — a missing id rejects the report
+  - **MUST NOT** edit anything outside the declared update scope; out-of-scope plan-section edits are a `scope_violation` (severity High, Evidence = section/line)
   - **MUST NOT** self-approve or drive stage transitions — the plugin validates the report and routes PASS/FAIL by the configured confirmation mode
   - In SMART confirmation mode a FAIL verdict **MUST** additionally carry exactly one `## Plan Revision Decision` section with `**action**: revise-plan` or `**action**: request-human` and a non-placeholder `**reason**` line; PASS reports never include it and `proceed-develop` is never a valid action
 

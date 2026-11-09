@@ -621,6 +621,22 @@ async function routeConfirmReject(
     // so a leftover stamp must not leak into the target stage's deferral window.
     confirmGateDeferredAt: undefined,
   };
+  // 229 Phase 7 (F7/问题 6): review→fix routing captures the review report's
+  // PROTECTED-body hash as the fix stage's write-whitelist baseline; the fix
+  // exit refuses edits outside the allowed fields (fix-report-edit-verifier).
+  if (fromStage === "review" && toStage === "fix") {
+    const { protectedFixReportHash } = await import("./verifiers/fix-report-edit-verifier");
+    const reportPath = await resolveStageDocPath(config, meta, "review");
+    if (reportPath !== null) {
+      try {
+        const content = await fs.readFile(reportPath, "utf-8");
+        rejectPatch.reviewReportHashAtFixStart = protectedFixReportHash(content);
+      } catch {
+        // report unreadable ⇒ no baseline — the fix-exit check skips (no
+        // baseline) and audits instead of guessing.
+      }
+    }
+  }
   // 210 Phase 4: capture the rejected stage's entry clock BEFORE the commit —
   // the patch below rewrites `stageStartTime` (and under shared-store mocks the
   // caller's `meta` object itself), so reading it after would report ~0 duration.

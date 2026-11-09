@@ -240,13 +240,17 @@ describe("193 Phase 4: decision-contract asset consistency", () => {
     expect(stripped).not.toMatch(/revise-plan|request-human|proceed-develop/i);
   });
 
-  it("SKILL.md and agent md teach issues precedence + report-only writes", () => {
+  it("SKILL.md and agent md teach the blocking-set rule + report-only writes (229 :249 rewrite)", () => {
     const skill = readTemplate(path.join("skills", "design-review", "SKILL.md"));
     const agent = readTemplate(path.join("agents", "design-review-agent.md"));
     for (const doc of [skill, agent]) {
       // the forbidden severity-threshold verdict rule is GONE
       expect(doc).not.toContain("No Blocker or High severity");
-      expect(doc).toMatch(/ISSUES TAKE PRECEDENCE/i);
+      // 229 Phase 7 (F7): the pre-229 "any valid issue ⇒ FAIL" verdict rule is
+      // REPLACED by the blocking set — Skill/Agent teach the new criteria and
+      // the two-part contract.
+      expect(doc).toMatch(/BLOCKING SET/i);
+      expect(doc).toMatch(/## Issue Ledger/);
       expect(doc).toMatch(/revise-plan/);
       expect(doc).toMatch(/request-human/);
       expect(doc).toContain("Do NOT approve stages");
@@ -292,7 +296,10 @@ describe("193 Phase 4: decision-contract asset consistency", () => {
       expect(deliverable).toContain(heading);
     }
     expect(deliverable).toContain("`None`");
-    expect(deliverable).toMatch(/issues take precedence/i);
+    // 229 Phase 7 (F7): the deliverable teaches the blocking-set rule and the
+    // two-part report contract (ledger restatement duty).
+    expect(deliverable).toMatch(/BLOCKING `## Issues` entry/i);
+    expect(deliverable).toContain("## Issue Ledger");
     expect(deliverable).toContain("request-human");
     // the placeholder inventory comment counts the two design-review keys
     expect(yml).toContain("Available placeholders (13 total)");

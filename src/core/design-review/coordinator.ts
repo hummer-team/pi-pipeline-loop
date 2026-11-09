@@ -3461,9 +3461,22 @@ async function spawnDesignReviewAgent(
         ) ?? undefined;
     }
   }
+  // 229 Phase 7 (F7/task 3): the LEGACY-CRITERIA compat patch for UNMIGRATED
+  // projects (review dispatches only). Fixed order: task.prompt → findings
+  // directive → criteria patch. Migrated assets ⇒ null (no extra bytes).
+  let criteriaPatch: string | undefined;
+  if (operation.kind === "review") {
+    const { renderCriteriaPatch } = await import("./criteria-patch");
+    criteriaPatch = (await renderCriteriaPatch({
+      config: ctx.config,
+      meta,
+      taskPrompt: task.prompt,
+    })) ?? undefined;
+  }
   const finalPrompt = [
     task.prompt,
     ...(findingsDirective !== undefined ? ["", findingsDirective] : []),
+    ...(criteriaPatch !== undefined ? ["", criteriaPatch] : []),
     // 229 Phase 6 (F6/问题 19 / B8): carry-over VISIBILITY on the develop
     // handoff ONLY — mutually exclusive with the review findings directive
     // (B8). Zero bytes when no loop-exit record exists (prompt unchanged).

@@ -41,11 +41,14 @@ Validate the plan document against requirements and ensure it's ready for implem
 6. Check whether phase dependencies (preceding phases) are marked
 
 ### Verdict Rules
-- ISSUES TAKE PRECEDENCE: ANY valid entry under `## Issues` means FAIL,
-  regardless of severity labels or the conclusion line
-- PASS requires the `## Issues` section to contain exactly `None`
-- Severity labels may annotate issues for the reader; they never change the
-  verdict rule above
+- BLOCKING SET: the verdict is FAIL only when `## Issues` carries at least
+  one BLOCKING issue (severity Blocker or High WITH Evidence); `None` or
+  only Medium/Low entries means PASS
+- PASS requires `## Issues` to contain exactly `None` OR only non-blocking
+  entries (still listed with ids/severities)
+- Severity is REQUIRED on every issue (Blocker | High | Medium | Low); a
+  Blocker or High additionally cites Evidence; a missing severity or a
+  blocking issue without Evidence rejects the report as INVALID
 
 ### Report Structure
 Follow the template in `references/design_review_report_template.md`:
@@ -58,10 +61,14 @@ Follow the template in `references/design_review_report_template.md`:
   `## Issues` — each present exactly once (order is free) with real content
 - Verdict section (with exact markers): `**Design Review: PASS**` or
   `**Design Review: FAIL**`
-- `## Issues`: one entry per problem; when there are NO issues write exactly
-  `None` as the single entry (partial phrases and empty sections do NOT count)
-- Valid Issues entries take precedence: a PASS verdict alongside non-empty
-  Issues is FAILed by the verifier
+- `## Issues`: the four-column table (`ID`/`Severity`/`Evidence`/`Summary`);
+  stable ids (`DR-<round>-n`) repeat the SAME id for the SAME problem across
+  rounds; when there are NO issues write exactly `None` as the single entry
+  (partial phrases and empty sections do NOT count)
+- `## Issue Ledger`: when the spawn context injected previous-round open
+  findings, restate EVERY id with a legal status
+  (`open`/`fixed`/`accepted-risk`/`carry-over`); a missing injected id
+  rejects the report
 - SMART mode ONLY: a FAIL verdict must carry exactly one
   `## Plan Revision Decision` section with `**action**` set to `revise-plan`
   or `request-human` and a real (non-placeholder) `**reason**` line;

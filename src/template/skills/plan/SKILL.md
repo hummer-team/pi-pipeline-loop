@@ -27,6 +27,7 @@ disable-model-invocation: true
 1. Two‑way traceability between design and plan: The planning phase must reference specific points from the design solution.
 2. Full‑coverage review before finalizing the plan.
 3. Shall not exceed the scope of issue clarification and solution decisions.
+4. (229 R1-Q2 B) Plan targets carry CONTRACT-LEVEL precision: each Phase MUST state testable acceptance assertions (exact command + expected outcome), not "target code" sketches — the design-review's blocking set audits THIS contract.
 
 ### Follow YAGNI Principle‑Code Restraint & Reflection
 1. Is there an existing implementation in codebase? Reuse existing functions and modules.
