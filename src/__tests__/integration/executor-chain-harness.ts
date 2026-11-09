@@ -53,7 +53,9 @@ import {
   reviewReportContent,
   writeStandaloneUpdateDeliverables,
   deployDispatchAssets,
+  designReviewIssueRows,
 } from "../helpers";
+import { resolvePreviousOpenFindings } from "../../core/auto-pipeline/review-findings-directive";
 
 const MANAGER_KEY = Symbol.for("pi-subagents:manager");
 
@@ -524,6 +526,14 @@ export function makeChainHarness(opts?: ChainHarnessOptions): ChainHarness {
     writeReport: (verdict, issues = []) => {
       const st = harness.state();
       if (!st?.operation) throw new Error("writeReport: no current design-review operation");
+      // 229 Phase 2 (F2/B18): rounds > 1 restate the previous round's remaining
+      // OPEN ids via the production read-only resolver (PASS closes the debt);
+      // a round-1 FAIL carries its own ledger so legacy synthesis never applies.
+      const previous = resolvePreviousOpenFindings({ planDoc: st.planDoc, round: st.round });
+      const carried = (previous?.records ?? []).map((r) => ({ id: r.id, status: verdict === "PASS" ? "fixed" : "open" }));
+      const ownRows = verdict === "FAIL" && issues.length > 0
+        ? designReviewIssueRows(issues, st.round).slice(3).map((row) => ({ id: row.split("|")[1]?.trim() ?? "", status: "open" }))
+        : [];
       const content = reviewReportContent({
         pipelineId: harness.meta().pipelineId ?? "unknown",
         planDoc: st.planDoc,
@@ -532,6 +542,9 @@ export function makeChainHarness(opts?: ChainHarnessOptions): ChainHarness {
         inputHash: st.operation.inputHash ?? "",
         verdict,
         issues,
+        ...(ownRows.length + carried.length > 0
+          ? { restateLedger: [...carried, ...ownRows] }
+          : {}),
       });
       fs.writeFileSync(deriveReportPath(st.planDoc, st.round), content, "utf-8");
     },

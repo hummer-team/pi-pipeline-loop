@@ -3241,7 +3241,55 @@ async function spawnDesignReviewAgent(
   // auto job ⇒ `finalPrompt` is byte-identical to the pre-220 prompt (INV-1).
   const { resolveAutoLedgerGuidance } = await import("../auto-pipeline/design-review-ledger-inject");
   const ledgerGuidance = await resolveAutoLedgerGuidance({ config: ctx.config, planDoc: drState.planDoc });
-  const finalPrompt = ledgerGuidance ? `${task.prompt}\n\n${ledgerGuidance}` : task.prompt;
+  // 229 Phase 2 (F2/B8): cross-round findings directive — REVIEW dispatches
+  // ONLY (update/develop-handoff prompts are never polluted, B8). B6: applied
+  // identically on both tracks. Fixed order: task.prompt → findings directive
+  // (229 Phase 7 appends the legacy-criteria patch after it) → ledger guidance.
+  let findingsDirective: string | undefined;
+  if (operation.kind === "review") {
+    const { resolvePreviousOpenFindings, renderReviewFindingsDirective, declaredScopeOf } =
+      await import("../auto-pipeline/review-findings-directive");
+    const previous = resolvePreviousOpenFindings({ planDoc: drState.planDoc, round: drState.round });
+    if (previous !== null) {
+      // B9: synthesis is deterministic read-time work; the coordinator
+      // PERSISTS the legacy carry-over ONCE (empty role ⇒ not yet recorded)
+      // so the closure baseline is auditable — failures never block dispatch.
+      if (previous.legacy && previous.records.length > 0 && !drState.legacyCarryOver) {
+        try {
+          ctx.session.updateMeta({
+            designReview: { ...drState, legacyCarryOver: previous.records },
+          });
+          await safeWriteAuditLog("design_review_coordinator", {
+            action: "legacy_carry_over_recorded",
+            pipelineId: meta.pipelineId,
+            stage: "design-review",
+            round: String(drState.round),
+            sourceReport: previous.reportPath,
+            ids: previous.records.map((r) => r.id).join(","),
+          });
+        } catch (error) {
+          await safeWriteAuditLog("design_review_coordinator", {
+            action: "legacy_carry_over_persist_failed",
+            pipelineId: meta.pipelineId,
+            stage: "design-review",
+            round: String(drState.round),
+            error: error instanceof Error ? error.message : String(error),
+          }, "warn");
+        }
+      }
+      findingsDirective =
+        renderReviewFindingsDirective(
+          previous.records,
+          previous.reportPath,
+          declaredScopeOf(ctx.session.getMeta()?.designReview),
+        ) ?? undefined;
+    }
+  }
+  const finalPrompt = [
+    task.prompt,
+    ...(findingsDirective !== undefined ? ["", findingsDirective] : []),
+    ...(ledgerGuidance ? ["", ledgerGuidance] : []),
+  ].join("\n");
   const spawnDescription = task.description;
 
   const operationContext = makeOperationContext(freshMeta, drState, operation);

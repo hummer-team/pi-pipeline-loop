@@ -443,6 +443,20 @@ export function reviewReportContent(opts: {
   includeSummarySection?: boolean;
   /** 193 Phase 0: set false to omit the Recommendations section */
   includeRecommendationsSection?: boolean;
+  /**
+   * 229 Phase 2 (F2): explicit `## Issue Ledger` row entries restated by this
+   * report (full entry form — id + status + optional severity/evidence/summary).
+   */
+  restateLedger?: ReadonlyArray<{ id: string; status: string; severity?: string; evidence?: string; summary?: string }>;
+  /** 229 Phase 2 (F2): shorthand — restate these round-1 ids with one shared status. */
+  restateIds?: readonly string[];
+  /** Shared status for `restateIds` (default `open`). */
+  restateStatus?: "open" | "fixed" | "carry-over" | "accepted-risk";
+  /**
+   * 229 Phase 2 (B18): override the stable ids emitted in the `## Issues`
+   * rows, so a continued problem keeps the SAME id across rounds.
+   */
+  issueIds?: readonly string[];
 }): string {
   const round = opts.round ?? 1;
   const lines = [
@@ -470,16 +484,35 @@ export function reviewReportContent(opts: {
   if (opts.verdictRow !== null) {
     lines.push(opts.verdictRow ?? `**Design Review: ${opts.verdict}**`);
   }
+  // 229 Phase 2 (F2): optional cross-round ledger restatement — a report that
+  // continues an unfinished loop MUST restate the previous round's ids with a
+  // legal status (otherwise the closure check rejects it).
+  if (opts.restateLedger !== undefined && opts.restateIds !== undefined) {
+    throw new Error("restateLedger and restateIds are mutually exclusive");
+  }
+  if (opts.restateLedger !== undefined) {
+    lines.push("", "## Issue Ledger");
+    for (const row of designReviewLedgerRows(opts.restateLedger)) lines.push(row);
+  } else if (opts.restateIds !== undefined) {
+    lines.push("", "## Issue Ledger");
+    for (const row of designReviewLedgerRows(restateRound1Open(opts.restateIds, opts.restateStatus ?? "open"))) {
+      lines.push(row);
+    }
+  }
   if (opts.includeIssuesSection !== false) {
     lines.push("", "## Issues");
     if (opts.verdict === "PASS" || (opts.issues ?? []).length === 0) {
       lines.push("None");
     } else {
-      // 229 Phase 1 (F1): FAIL fixtures carry legal BLOCKING rows — the new
-      // fail-closed severity gate rejects severity-less records as invalid.
-      for (const row of designReviewIssueRows(opts.issues ?? [], round)) {
-        lines.push(row);
-      }
+      // 229 Phase 1 (F1)/229 Phase 2 (B18): FAIL fixtures carry legal BLOCKING
+      // rows; `issueIds` overrides the generated stable ids so a continued
+      // problem keeps the SAME id across rounds.
+      const rows = designReviewIssueRows(opts.issues ?? [], round).map((row, i) => {
+        if (i < 2) return row; // header + separator
+        const id = opts.issueIds?.[i - 2];
+        return id !== undefined ? row.replace(`DR-${round}-${i - 1}`, id) : row;
+      });
+      for (const row of rows) lines.push(row);
     }
   }
   if (opts.includeRecommendationsSection !== false) {
@@ -867,6 +900,42 @@ export async function seedReviewPassEvidence(
     "# Code Review\n\n## Verdict\n\n**Verdict: PASS**\n",
     "utf-8",
   );
+}
+
+/**
+ * 229 Phase 2 (F2/B18): render one legal four-column `## Issue Ledger` row set.
+ * Loading entries restate previous-round ids with their CURRENT status, so the
+ * round-n report satisfies the cross-round closure check.
+ */
+export function designReviewLedgerRows(
+  entries: ReadonlyArray<{
+    id: string;
+    severity?: string;
+    status: string;
+    evidence?: string;
+    summary?: string;
+  }>,
+): string[] {
+  return [
+    "| ID | Severity | Status | Evidence | Summary |",
+    "| --- | --- | --- | --- | --- |",
+    ...entries.map(
+      (e) =>
+        `| ${e.id} | ${e.severity ?? "Blocker"} | ${e.status} | ${e.evidence ?? "-"} | ${e.summary ?? "-"} |`,
+    ),
+  ];
+}
+
+/**
+ * 229 Phase 2 (F2) shim for `reviewReportContent`: a small ledger-restatement
+ * plan per report id. `status === "fixed"` closes the item; an item not in
+ * `open`/`fixed`/`carry-over`/`accepted-risk` yields an illegal ledger.
+ */
+export function restateRound1Open(
+  ids: readonly string[],
+  status: "open" | "fixed" | "carry-over" | "accepted-risk" = "open",
+): Array<{ id: string; status: string }> {
+  return ids.map((id) => ({ id, status }));
 }
 
 // ─── 229 Phase 1 (F1): legal `## Issues` rows for FAIL review reports ────────

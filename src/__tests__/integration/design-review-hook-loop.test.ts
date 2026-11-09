@@ -12,7 +12,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, afterAll } from "bun:test";
-import { designReviewIssueRows } from "../helpers";
+import { designReviewIssueRows, designReviewLedgerRows } from "../helpers";
+import { resolvePreviousOpenFindings } from "../../core/auto-pipeline/review-findings-directive";
 import { clearAllDecisionTimers } from "../../core/flow-state";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -258,6 +259,13 @@ function authorizeReview(h: Harness) {
 function writeReport(h: Harness, verdict: "PASS" | "FAIL", issues: string[] = []) {
   const st = stateOf(h);
   const op = st.operation!;
+  // 229 Phase 2 (F2/B18): rounds > 1 restate the previous round's remaining
+  // OPEN ids via the production read-only resolver (PASS closes the debt).
+  const carried: string[] = [];
+  if (st.round > 1) {
+    const previous = resolvePreviousOpenFindings({ planDoc: st.planDoc, round: st.round });
+    for (const r of previous?.records ?? []) carried.push(r.id);
+  }
   const lines = [
     "# Design Review Report",
     "",
@@ -277,6 +285,15 @@ function writeReport(h: Harness, verdict: "PASS" | "FAIL", issues: string[] = []
     "",
     `**Design Review: ${verdict}**`,
     "",
+    ...(carried.length > 0
+      ? [
+          "## Issue Ledger",
+          ...designReviewLedgerRows(
+            carried.map((id) => ({ id, status: verdict === "PASS" ? "fixed" : "open" })),
+          ),
+          "",
+        ]
+      : []),
     "## Issues",
     // 229 Phase 1 (F1): FAIL fixtures carry legal BLOCKING four-column rows.
     ...(issues.length > 0 ? designReviewIssueRows(issues, st.round) : ["None"]),

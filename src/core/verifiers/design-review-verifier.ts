@@ -63,6 +63,7 @@ import {
 import {
   hasEvidence,
   isBlockingSeverity,
+  parseIssueLedgerSection,
   scanIssuesSection,
 } from "../design-review/issue-ledger";
 import { parseDesignReviewSmartDecision } from "../design-review/smart-decision";
@@ -214,10 +215,12 @@ export function verifyDesignReviewReportSnapshot(
   const reportHash = computeReportHash(content);
   const failures: string[] = [];
   const lines = stripInertLines(content);
+  const requireLedger = options?.requireIssueLedger === true;
   const contractOptions = {
     issueHeadingPattern: options?.issueHeadingPattern,
     requireOperation: expectation.operationId !== undefined,
     requireInputHash: expectation.inputHash !== undefined,
+    requireIssueLedger: requireLedger,
   };
 
   // ── 1. Identity/attribution ────────────────────────────────────────────────
@@ -300,6 +303,39 @@ export function verifyDesignReviewReportSnapshot(
         seen.push({ value: tokenToVerdict(m[1]), token: m[1], line: trimmed });
         break;
       }
+    }
+  }
+
+  // ── 3b. 229 Phase 2 (F2/B18): cross-round ledger CLOSURE (orthogonal) ─────
+  // When a previous round left open/carry-over items, EVERY id must re-appear
+  // in this round's `## Issue Ledger` with a legal status. Missing ⇒ the
+  // report is invalid (fail-closed) naming the missing ids — regardless of the
+  // verdict semantics (a PASS can never lift the closure debt).
+  if (options?.previousOpenIssues !== undefined && options.previousOpenIssues.length > 0) {
+    const ledgerSection = extractReportSection(
+      lines,
+      /^#{1,4}\s*(Issue Ledger|问题台账)\s*$/i,
+    );
+    if (!ledgerSection) {
+      return {
+        verdict: "invalid",
+        failures: ["missing Issue Ledger section heading (## Issue Ledger / ## 问题台账) for the cross-round closure"],
+        reportHash,
+      };
+    }
+    const ledgerRecords = parseIssueLedgerSection(ledgerSection.lines, expectation.round);
+    const seenIds = new Set(ledgerRecords.map((r) => r.id));
+    const missing = options.previousOpenIssues
+      .filter((r) => !seenIds.has(r.id))
+      .map((r) => r.id);
+    if (missing.length > 0) {
+      return {
+        verdict: "invalid",
+        failures: [
+          `cross-round closure violated — issue(s) still open from the previous round are missing from the Issue Ledger: ${missing.join(", ")}`,
+        ],
+        reportHash,
+      };
     }
   }
 

@@ -56,6 +56,12 @@ import {
 import type { DesignReviewSnapshotSet } from "./design-review/verification-snapshot";
 import { buildDesignReviewIdentity } from "./design-review/state";
 import { verifyDesignReviewReportSnapshot } from "./verifiers/design-review-verifier";
+import {
+  computeOpenSet,
+} from "./design-review/issue-ledger";
+import {
+  resolvePreviousOpenFindings,
+} from "./auto-pipeline/review-findings-directive";
 import { validateDesignReviewUpdate } from "./verifiers/design-review-update-verifier";
 import type { DesignReviewVerificationOutcome } from "../types";
 import { diagnoseVerifyConfig } from "./verify-config-diagnosis";
@@ -503,6 +509,30 @@ async function computeDesignReviewDomainOutcome(
     // gate over the SAME snapshot; the decision is handed to consumers
     // through this outcome so the coordinator never re-reads the report.
     const reviewConfirmMode = resolveDesignReviewConfirmMode(meta, config);
+    // 229 Phase 2 (F2/B9): the previous round's OPEN findings are read ONCE
+    // here (read-only) and drive BOTH:
+    //  - the closure gate (requireIssueLedger + previousOpenIssues), and
+    //  - the per-round directive (coordinator renders it at dispatch).
+    // NO meta is written in this path (the coordinator owns persistence).
+    const previousFindings = resolvePreviousOpenFindings({
+      planDoc: ctx.planDoc,
+      round: ctx.round,
+    });
+    const previousOpenIssues = previousFindings !== null
+      ? computeOpenSet(previousFindings.records)
+      : undefined;
+    if (previousFindings === null) {
+      // 229 Phase 2: first round OR no readable previous report ⇒ the ledger
+      // closure is skipped (audited once per verification, never fail-closed).
+      await safeWriteAuditLog("issue_ledger_closure_skipped", {
+        pipelineId: ctx.pipelineId,
+        stage: "design-review",
+        round: String(ctx.round),
+        reason: ctx.round <= 1 ? "first_round" : "previous_report_unreadable",
+      }, "info");
+    }
+    const hasClosureDebt = (previousOpenIssues?.length ?? 0) > 0;
+    void previousFindings;
     const v = verifyDesignReviewReportSnapshot(content, {
       pipelineId: ctx.pipelineId,
       planDoc: ctx.planDoc,
@@ -513,9 +543,10 @@ async function computeDesignReviewDomainOutcome(
       verdictPatterns: anchors.anchors.verdict?.patterns,
       issueHeadingPattern: anchors.anchors.issueHeading?.patterns[0],
       smartDecisionMode: reviewConfirmMode === "smart",
-      // 229 Phase 1 (B11): severityGate stays at its fail-closed default;
-      // 229 Phase 2 computes requireIssueLedger/previousOpenIssues and passes
-      // them here (option positions reserved now — see design-review-verifier).
+      // 229 Phase 2: a ledger requirement exists ONLY when the previous round
+      // actually left open items to restate (an empty carry-over set is not a debt).
+      requireIssueLedger: hasClosureDebt,
+      ...(hasClosureDebt && previousOpenIssues !== undefined ? { previousOpenIssues } : {}),
     });
     if (v.verdict === "invalid") {
       return {

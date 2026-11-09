@@ -38,6 +38,7 @@ import {
   classifyDesignReviewFlow,
 } from "../../core/design-review/state";
 import { coordinateDesignReview, type CoordinatorContext } from "../../core/design-review/coordinator";
+import { resolvePreviousOpenFindings } from "../../core/auto-pipeline/review-findings-directive";
 import { markSubagentsReady, __resetSubagentsReady } from "../../utils/subagent-availability";
 import { initAuditLog, __resetAuditDirPath } from "../../utils/auditLog";
 import {
@@ -48,6 +49,7 @@ import {
   writeStandaloneUpdateDeliverables,
   deployDispatchAssets,
   designReviewIssueRows,
+  designReviewLedgerRows,
 } from "../helpers";
 
 // ─── full-cycle harness: ordinary plan start + real TUI menu ────────────────
@@ -228,6 +230,16 @@ function stateOf(h: LoopHarness): DesignReviewState {
 function writeReport(h: LoopHarness, verdict: "PASS" | "FAIL", issues: string[] = []) {
   const st = stateOf(h);
   const op = st.operation!;
+  // 229 Phase 2 (F2/B18): rounds > 1 restate the ids that REMAIN OPEN in the
+  // round-(n-1) report — resolved with the PRODUCTION read-only resolver so
+  // the fixture cannot drift from the closure debt (it reads the previous
+  // ledger when the report carries one, else synthesizes legacy ids). PASS
+  // closes them, FAIL keeps them open.
+  const carried: string[] = [];
+  if (st.round > 1) {
+    const previous = resolvePreviousOpenFindings({ planDoc: st.planDoc, round: st.round });
+    for (const r of previous?.records ?? []) carried.push(r.id);
+  }
   const lines = [
     "# Design Review Report",
     "",
@@ -247,6 +259,15 @@ function writeReport(h: LoopHarness, verdict: "PASS" | "FAIL", issues: string[] 
     "",
     `**Design Review: ${verdict}**`,
     "",
+    ...(carried.length > 0
+      ? [
+          "## Issue Ledger",
+          ...designReviewLedgerRows(
+            carried.map((id) => ({ id, status: verdict === "PASS" ? "fixed" : "open" })),
+          ),
+          "",
+        ]
+      : []),
     "## Issues",
     // 229 Phase 1 (F1): FAIL fixtures carry legal BLOCKING four-column rows.
     ...(issues.length > 0 ? designReviewIssueRows(issues, st.round) : ["None"]),

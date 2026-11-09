@@ -169,7 +169,23 @@ function samePath(a: string, b: string): boolean {
  * Shared disposition gate (both output modes): unknown ids, bad dispositions,
  * empty justifications, missing/duplicate entries fail the contract; the
  * surviving per-issue entries are returned for the sentinel check.
+ *
+ * 229 Phase 2 (B18): report ids are STABLE (`DR-<round>-n`). A pure-number
+ * row id is the LEGACY mapping — resolved BY THE CURRENT `## Issues` ORDER
+ * from `issueIds` (index n-1). An out-of-range/duplicated numeral stays
+ * "unknown" (fail-closed, the mismatch text names the id form).
  */
+function legacyNumericMapping(
+  rowId: string,
+  issueIds: readonly string[],
+): string | null {
+  const m = /^(\d+)$/.exec(rowId.trim());
+  if (!m || m[1] === undefined) return null;
+  const index = Number(m[1]) - 1;
+  if (index < 0 || index >= issueIds.length) return null;
+  return issueIds[index]!;
+}
+
 function collectDispositions(
   lines: readonly string[],
   issueIds: readonly string[],
@@ -183,21 +199,28 @@ function collectDispositions(
   const expected = new Set(issueIds);
   const seen = new Map<string, { count: number; disposition: string; justification: string }>();
   for (const row of rows) {
-    if (!expected.has(row.issueId)) {
-      failures.push(`unknown issue id "${row.issueId}" (not part of the consumed report)`);
+    let resolvedId = row.issueId;
+    if (!expected.has(resolvedId)) {
+      const mapped = legacyNumericMapping(resolvedId, issueIds);
+      if (mapped !== null) resolvedId = mapped;
+    }
+    if (!expected.has(resolvedId)) {
+      failures.push(
+        `unknown issue id "${row.issueId}" (not part of the consumed report — report ids are STABLE DR-<round>-n; pure numbers map by the ## Issues order)`,
+      );
       continue;
     }
     if (!ADVANCE_DISPOSITIONS.has(row.disposition) && !PAUSE_DISPOSITIONS.has(row.disposition)) {
-      failures.push(`issue "${row.issueId}": unknown disposition "${row.disposition}"`);
+      failures.push(`issue "${resolvedId}": unknown disposition "${row.disposition}"`);
       continue;
     }
     if (row.justification.trim() === "") {
-      failures.push(`issue "${row.issueId}": empty justification`);
+      failures.push(`issue "${resolvedId}": empty justification`);
       continue;
     }
-    const prev = seen.get(row.issueId);
+    const prev = seen.get(resolvedId);
     if (prev) prev.count += 1;
-    else seen.set(row.issueId, { count: 1, disposition: row.disposition, justification: row.justification });
+    else seen.set(resolvedId, { count: 1, disposition: row.disposition, justification: row.justification });
   }
 
   for (const id of expected) {
