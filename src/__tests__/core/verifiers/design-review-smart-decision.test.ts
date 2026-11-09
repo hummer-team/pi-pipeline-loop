@@ -19,6 +19,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { designReviewIssueRows } from "../../../__tests__/helpers";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
@@ -86,7 +87,10 @@ function report(o: {
     "",
     "## Issues",
     "",
-    ...(o.verdict === "PASS" ? ["None"] : (o.issues ?? ["1. Missing rollback plan for the migration phase"])),
+    ...(o.verdict === "PASS"
+      ? ["None"]
+      // 229 Phase 1 (F1): legal blocking rows (fail-closed severity gate).
+      : designReviewIssueRows(o.issues ?? ["Missing rollback plan for the migration phase"], o.round ?? 1)),
   ];
   if (o.decision !== null && o.decision !== undefined) {
     lines.push(...decisionSection(o.decision));

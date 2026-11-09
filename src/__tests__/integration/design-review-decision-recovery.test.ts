@@ -43,7 +43,7 @@ import { DESIGN_REVIEW_PENDING_RESUME_INSTRUCTION } from "../../core/design-revi
 import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
 import { __resetMemoryThrottle } from "../../utils/audit-throttle";
 import type { DesignReviewActorInput, DesignReviewInteractionSource } from "../../core/design-review/decision-types";
-import { makeTestConfig, makeTestMeta, makeStrictSession } from "../helpers";
+import { makeTestConfig, makeTestMeta, makeStrictSession, designReviewIssueRows } from "../helpers";
 
 const PIPE = "pipe-212-incident";
 const OWNER = "/x/owner-session.json";
@@ -102,7 +102,7 @@ function report(o: {
     "",
     "## Issues",
     "",
-    ...(o.verdict === "PASS" ? ["None"] : (o.issues ?? ["1. Missing rollback plan for the migration phase"])),
+    ...(o.verdict === "PASS" ? ["None"] : designReviewIssueRows(o.issues ?? ["Missing rollback plan for the migration phase"])),
     "",
   ].join("\n");
 }

@@ -135,6 +135,20 @@ function renderReportFeedback(
     .join("; ");
   if (aliasNote !== "") push(`Aliases: ${aliasNote}.`);
   push();
+  // 229 Phase 1 (F1/task 5): the blocking-set gate has two dedicated
+  // corrective lines when the report fails record legality.
+  const failureText = failures.map((f) => f.detail).join(" ");
+  if (failureText.includes("is missing a legal severity")) {
+    push("Severity is REQUIRED on every issue: fill the Severity column of the Issues table");
+    push("with ONE of Blocker | High | Medium | Low (uppercase, exact tokens) for each id.");
+    push();
+  }
+  if (failureText.includes("requires Evidence")) {
+    push("Blocking issues (Blocker/High) MUST cite Evidence: the exact failing command,");
+    push("assertion or commit that proves the problem — 'unknown' or empty evidence is not");
+    push("accepted, because blocking items always fail the verdict.");
+    push();
+  }
   push("Required sections — each EXACTLY once, any order, spacing/case free, and each with");
   push("real content (blank lines, unfilled {placeholders}, code blocks, blockquotes and HTML");
   push("comments do NOT count):");

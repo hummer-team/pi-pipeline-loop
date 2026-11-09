@@ -47,6 +47,7 @@ import {
   boundReviewOperation,
   writeStandaloneUpdateDeliverables,
   deployDispatchAssets,
+  designReviewIssueRows,
 } from "../helpers";
 
 // ─── full-cycle harness: ordinary plan start + real TUI menu ────────────────
@@ -247,7 +248,8 @@ function writeReport(h: LoopHarness, verdict: "PASS" | "FAIL", issues: string[] 
     `**Design Review: ${verdict}**`,
     "",
     "## Issues",
-    ...(issues.length > 0 ? issues.map((t, i) => `${i + 1}. ${t}`) : ["None"]),
+    // 229 Phase 1 (F1): FAIL fixtures carry legal BLOCKING four-column rows.
+    ...(issues.length > 0 ? designReviewIssueRows(issues, st.round) : ["None"]),
     "",
     "## Recommendations",
     "",
@@ -316,7 +318,8 @@ describe("192 full cycle (rewritten per plan Phase 5 task 3): ordinary plan + re
     expect(st2.reviewInputReceipt?.reportHash).toBe(
       computeHash(fs.readFileSync(deriveReportPath(h.planDoc, 1), "utf-8")),
     );
-    expect(st2.reviewInputReceipt?.issueIds).toEqual(["1", "2"]);
+    // 229 Phase 1 (B18): STABLE `DR-<round>-n` receipt ids.
+    expect(st2.reviewInputReceipt?.issueIds).toEqual(["DR-1-1", "DR-1-2"]);
     // The update prompt carries the exact shipped contract text + report path.
     expect(h.lastPrompt()).toContain("Design Review Update");
     expect(h.lastPrompt()).toContain(st2.reviewInputReceipt!.reportDoc);
@@ -484,8 +487,11 @@ describe("192 successor cases replacing the retired any-of assertions", () => {
       "",
       "## Issues",
       "",
-      "1. Critical bug in implementation",
-      "2. Missing documentation",
+      // 229 Phase 1 (F1): legal BLOCKING rows keep the FAIL routing intent.
+      "| ID | Severity | Evidence | Summary |",
+      "| --- | --- | --- | --- |",
+      "| DR-1-1 | Blocker | failing assertion | Critical bug in implementation |",
+      "| DR-1-2 | Blocker | missing AC coverage | Missing documentation |",
       "",
       "## Recommendations",
       "",
@@ -500,7 +506,8 @@ describe("192 successor cases replacing the retired any-of assertions", () => {
     const after = ctx.session.getMeta()!.designReview!;
     expect(after.phase).toBe("update_running");
     expect(after.operation?.kind).toBe("update");
-    expect(after.reviewInputReceipt?.issueIds).toEqual(["1", "2"]);
+    // 229 Phase 1 (B18): STABLE `DR-<round>-n` receipt ids.
+    expect(after.reviewInputReceipt?.issueIds).toEqual(["DR-1-1", "DR-1-2"]);
   });
 
   it("N-1 successor (strong): Summary-prose PASS with real issues → EXACTLY routed to plan (never pass_ready)", async () => {
@@ -523,7 +530,9 @@ describe("192 successor cases replacing the retired any-of assertions", () => {
       "",
       "## Issues",
       "",
-      "1. Minor documentation gap",
+      "| ID | Severity | Evidence | Summary |",
+      "| --- | --- | --- | --- |",
+      "| DR-1-1 | Blocker | failing assertion | Minor documentation gap |",
       "",
       "## Recommendations",
       "",

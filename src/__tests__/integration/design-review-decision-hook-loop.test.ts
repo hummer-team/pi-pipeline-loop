@@ -34,6 +34,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, afterAll } from "bun:test";
+import { designReviewIssueRows } from "../helpers";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -309,7 +310,8 @@ function writeReport(
     `**Design Review: ${verdict}**`,
     "",
     "## Issues",
-    ...(issues.length > 0 ? issues.map((t, i) => `${i + 1}. ${t}`) : ["None"]),
+    // 229 Phase 1 (F1): FAIL fixtures carry legal BLOCKING four-column rows.
+    ...(issues.length > 0 ? designReviewIssueRows(issues, st.round) : ["None"]),
     "",
   ];
   if (smartDecision) {
@@ -400,7 +402,7 @@ describe("193 Phase 4: decision chains through the real hook chain", () => {
     expect(h.rpcCount()).toBe(2);
     expect(h.session.getMeta()!.currentStage).toBe("plan");
     expect(stateOf(h).operation?.kind).toBe("update");
-    expect(stateOf(h).reviewInputReceipt?.issueIds).toEqual(["1", "2"]);
+    expect(stateOf(h).reviewInputReceipt?.issueIds).toEqual(["DR-1-1", "DR-1-2"]); // 229 B18 stable ids
 
     writePlanUpdate(h);
     await h.settle(); // update consumed → round 2 review (rpc 3)

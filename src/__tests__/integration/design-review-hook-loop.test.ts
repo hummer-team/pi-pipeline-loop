@@ -12,6 +12,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, afterAll } from "bun:test";
+import { designReviewIssueRows } from "../helpers";
 import { clearAllDecisionTimers } from "../../core/flow-state";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -277,7 +278,8 @@ function writeReport(h: Harness, verdict: "PASS" | "FAIL", issues: string[] = []
     `**Design Review: ${verdict}**`,
     "",
     "## Issues",
-    ...(issues.length > 0 ? issues.map((t, i) => `${i + 1}. ${t}`) : ["None"]),
+    // 229 Phase 1 (F1): FAIL fixtures carry legal BLOCKING four-column rows.
+    ...(issues.length > 0 ? designReviewIssueRows(issues, st.round) : ["None"]),
     "",
     "## Recommendations",
     "",
@@ -349,7 +351,7 @@ describe("192 Phase 5: continuous hook-driven design-review loop", () => {
     const stFail = stateOf(h);
     expect(h.session.getMeta()!.currentStage).toBe("plan");
     expect(stFail.operation?.kind).toBe("update");
-    expect(stFail.reviewInputReceipt?.issueIds).toEqual(["1", "2"]);
+    expect(stFail.reviewInputReceipt?.issueIds).toEqual(["DR-1-1", "DR-1-2"]); // 229 B18 stable ids
     // The update prompt came from the SAME selection chain (missing YAML key →
     // constants default): contains the exact section contract + report path.
     expect(h.lastPrompt()).toContain("Design Review Update");

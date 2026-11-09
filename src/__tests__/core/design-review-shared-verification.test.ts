@@ -105,7 +105,8 @@ describe("192 Phase 3: runVerification domain outcome wiring", () => {
     expect(vr.designReviewOutcome?.kind).toBe("report");
     if (vr.designReviewOutcome?.kind === "report") {
       expect(vr.designReviewOutcome.verdict).toBe("fail");
-      expect(vr.designReviewOutcome.issues.map((i) => i.issueId)).toEqual(["1"]);
+      // 229 Phase 1 (B18): STABLE report ids (`DR-<round>-n`).
+      expect(vr.designReviewOutcome.issues.map((i) => i.issueId)).toEqual(["DR-1-1"]);
     }
   });
 

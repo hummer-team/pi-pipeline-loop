@@ -1188,7 +1188,9 @@ async function handleFail(
     : extractReportIssues(reportPath);
   const issueIds = verifiedIssues
     ? verifiedIssues.map((i) => i.issueId)
-    : issues.map((_issue, idx) => String(idx + 1));
+    // 229 Phase 1 (B18): legacy fallback (no verified domain outcome) maps the
+    // re-extracted issues to the round's STABLE ids by section order.
+    : issues.map((_issue, idx) => `DR-${drState.round}-${idx + 1}`);
 
   const newVisit = Date.now();
   const reviewOp = drState.operation;
@@ -2313,7 +2315,8 @@ async function handleUpdateReady(
   // Extract issues from report
   const reportPath = drState.reviewInputReceipt?.reportDoc ?? deriveReportPath(drState.planDoc, drState.round);
   const issues = extractReportIssues(reportPath);
-  const issueIds = issues.map((_issue, idx) => String(idx + 1));
+  // 229 Phase 1 (B18): legacy re-extraction maps to the round's STABLE ids.
+  const issueIds = issues.map((_issue, idx) => `DR-${drState.round}-${idx + 1}`);
   const reportHash = drState.reviewInputReceipt?.reportHash ?? "";
 
   // Fresh visit = the CURRENT plan-stage visit (never a stale review stamp).

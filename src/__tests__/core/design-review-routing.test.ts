@@ -201,7 +201,8 @@ describe("design-review-coordinator routing", () => {
       expect(after.operation?.kind).toBe("update");
       expect(after.operation?.operationId).not.toBe(REVIEW_OP_ID);
       expect(after.reviewInputReceipt?.reviewIdentity.operationId).toBe(REVIEW_OP_ID);
-      expect(after.reviewInputReceipt?.issueIds).toEqual(["1", "2"]);
+      // 229 Phase 1 (B18): issueIds are the STABLE report ids (DR-<round>-n).
+      expect(after.reviewInputReceipt?.issueIds).toEqual(["DR-1-1", "DR-1-2"]);
       expect(ctx.session.getMeta()!.currentStage).toBe("plan");
     });
 
@@ -214,7 +215,7 @@ describe("design-review-coordinator routing", () => {
         inputHash: planHash,
         verdict: "PASS",
         // verdict row PASS but issues non-empty → consumer must route FAIL
-      }).replace("## Issues\nNone", "## Issues\n1. Real defect despite PASS claim"));
+      }).replace("## Issues\nNone", "## Issues\n| ID | Severity | Evidence | Summary |\n| --- | --- | --- | --- |\n| DR-1-1 | Blocker | failing assertion | Real defect despite PASS claim |"));
       const meta = reviewRunningMeta();
       const ctx = createCoordinatorCtx(meta, trustedSpawn);
 

@@ -71,6 +71,7 @@ import {
   makeStrictSession,
   makeTestConfig,
   makeTestMeta,
+  designReviewIssueRows,
 } from "../helpers";
 import { makeChainHarness } from "./executor-chain-harness";
 import type { HumanDecision } from "../../core/design-review/decision-types";
@@ -360,7 +361,10 @@ describe("200 Bug Phase 5 chain B: decision window READ-ONLY, drift window scope
       "",
       "## Issues",
       "",
-      ...args.issues.map((issue, i) => `${i + 1}. ${issue}`),
+      // 229 Phase 1 (F1): FAIL fixtures carry legal BLOCKING four-column rows.
+      ...(args.verdict === "PASS"
+        ? ["None"]
+        : designReviewIssueRows(args.issues, 1)),
       "",
     ].join("\n");
   }

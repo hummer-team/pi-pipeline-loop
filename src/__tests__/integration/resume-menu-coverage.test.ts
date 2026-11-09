@@ -206,7 +206,10 @@ function covReport(o: {
     "",
     "## Issues",
     "",
-    "1. Missing rollback plan for the migration phase",
+    // 229 Phase 1 (F1): legal blocking row (fail-closed severity gate).
+    "| ID | Severity | Evidence | Summary |",
+    "| --- | --- | --- | --- |",
+    "| DR-1-1 | Blocker | failing assertion | Missing rollback plan for the migration phase |",
     "",
   ].join("\n");
 }

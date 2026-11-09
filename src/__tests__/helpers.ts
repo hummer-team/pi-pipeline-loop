@@ -475,8 +475,10 @@ export function reviewReportContent(opts: {
     if (opts.verdict === "PASS" || (opts.issues ?? []).length === 0) {
       lines.push("None");
     } else {
-      for (const [i, issue] of (opts.issues ?? []).entries()) {
-        lines.push(`${i + 1}. ${issue}`);
+      // 229 Phase 1 (F1): FAIL fixtures carry legal BLOCKING rows — the new
+      // fail-closed severity gate rejects severity-less records as invalid.
+      for (const row of designReviewIssueRows(opts.issues ?? [], round)) {
+        lines.push(row);
       }
     }
   }
@@ -865,4 +867,30 @@ export async function seedReviewPassEvidence(
     "# Code Review\n\n## Verdict\n\n**Verdict: PASS**\n",
     "utf-8",
   );
+}
+
+// ─── 229 Phase 1 (F1): legal `## Issues` rows for FAIL review reports ────────
+
+/**
+ * 229 Phase 1: render one BLOCKING four-column `## Issues` row set for a FAIL
+ * design-review report. The 229 severity gate rejects severity-less records
+ * as `invalid` (fail-closed, 两轨一致), so every test report that must
+ * produce a FAIL verdict carries one legal Blocker row per issue text:
+ * `| DR-<round>-<n> | Blocker | <evidence> | <summary> |`.
+ *
+ * Legacy 3-column/bullet forms remain covered by the legacy-fallback tests in
+ * `src/__tests__/design-review/issue-ledger.test.ts` — this helper is ONLY for
+ * reports that must verify as FAIL under the new contract.
+ */
+export function designReviewIssueRows(
+  texts: readonly string[],
+  round = 1,
+): string[] {
+  return [
+    "| ID | Severity | Evidence | Summary |",
+    "| --- | --- | --- | --- |",
+    ...texts.map(
+      (t, i) => `| DR-${round}-${i + 1} | Blocker | failing assertion #${i + 1} | ${t} |`,
+    ),
+  ];
 }

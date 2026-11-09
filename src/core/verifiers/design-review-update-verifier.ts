@@ -109,7 +109,12 @@ export interface DesignReviewUpdateValidationInput {
   reportContent?: string;
   /** Operation id of the CURRENT update operation (the section must match THIS) */
   updateOperationId: string;
-  /** Valid issue ids of the consumed report (1-based ordinals as strings) */
+  /**
+   * Valid issue ids of the consumed report. 229 Phase 1 (B18): these are the
+   * report's STABLE ids (`DR-<round>-n`); pure-number ids are accepted as the
+   * LEGACY mapping (by the current `## Issues` order) — that receipt-side
+   * rule is fully closed in 229 Phase 2 (task 5).
+   */
   issueIds: readonly string[];
   /**
    * 194 C1/C2: where this update's receipt must be. ABSENT means the caller

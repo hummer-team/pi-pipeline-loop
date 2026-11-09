@@ -48,7 +48,7 @@ import { buildPendingHumanDecision, clearAllHumanDecisionMenus } from "../../cor
 import { createInitialState, computeHash, deriveReportPath } from "../../core/design-review/state";
 import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
 import { __resetMemoryThrottle } from "../../utils/audit-throttle";
-import { makeTestConfig, makeTestMeta, makeStrictSession } from "../helpers";
+import { makeTestConfig, makeTestMeta, makeStrictSession, designReviewIssueRows } from "../helpers";
 
 const CHILD = "/x/child-session.json";
 const PARENT = "/x/owner-session.json";
@@ -93,7 +93,7 @@ function report(o: {
     "",
     "## Issues",
     "",
-    ...(o.verdict === "PASS" ? ["None"] : (o.issues ?? ["1. Missing rollback plan for the migration phase"])),
+    ...(o.verdict === "PASS" ? ["None"] : designReviewIssueRows(o.issues ?? ["Missing rollback plan for the migration phase"])),
     "",
   ].join("\n");
 }

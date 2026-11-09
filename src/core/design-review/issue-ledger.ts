@@ -210,13 +210,22 @@ function buildRecordFromCells(
   };
 }
 
-/** Shared parser for `## Issues` (status column ignored) and `## Issue Ledger`. */
-function parseLedgerLines(
+/**
+ * Single-pass scan of an `## Issues`-style section body (shared internal).
+ * Mirrors the historical verifier item enumeration EXACTLY (inert lines
+ * already stripped upstream): markdown separator/heading/blank rows are
+ * skipped, table data rows resolve their summary cell (declared column or the
+ * legacy `cells[1]` heuristic), bullets and bare lines count as items, and
+ * exact whole-item sentinels are stripped BEFORE record construction.
+ */
+function walkIssuesSection(
   lines: readonly string[],
   round: number,
-): DesignReviewIssueRecord[] {
+): { records: DesignReviewIssueRecord[]; sentinelPresent: boolean; rawItemCount: number } {
   const records: DesignReviewIssueRecord[] = [];
   let columns: LedgerColumns | null = null;
+  let sentinelPresent = false;
+  let rawItemCount = 0;
   for (const line of lines) {
     const trimmed = line.trim();
     if (trimmed === "" || trimmed.startsWith("#")) continue;
@@ -225,12 +234,23 @@ function parseLedgerLines(
     const tableRow = trimmed.match(TABLE_ROW_RE);
     if (tableRow && tableRow[1] !== undefined) {
       const cells = tableRow[1].split("|").map((c) => c.trim());
+      const first = cells[0]?.toLowerCase() ?? "";
       if (columns === null) {
         const detected = detectHeaderColumns(cells);
         if (detected !== null) {
           columns = detected;
           continue;
         }
+      }
+      // Degenerate header-like rows are neither items nor data (legacy guard).
+      if (first === "#" || first === "issue" || first === "问题" || first === "") continue;
+      const text = resolveSummaryText(columns, cells);
+      // Legacy count parity: only rows that produced a candidate item text
+      // (sentinels included) enter the raw count.
+      if (text !== "" && text.toLowerCase() !== "issue") rawItemCount += 1;
+      if (text === "" || text.toLowerCase() === "issue" || isNoIssueSentinel(text)) {
+        if (text !== "" && isNoIssueSentinel(text)) sentinelPresent = true;
+        continue;
       }
       const record = buildRecordFromCells(cells, columns, round, records);
       if (record !== null) records.push(record);
@@ -240,7 +260,11 @@ function parseLedgerLines(
     // way and MUST be visible (stripped BEFORE record construction, 问题 11).
     const bullet = trimmed.match(BULLET_RE);
     const text = (bullet && bullet[1] !== undefined ? bullet[1] : trimmed).trim();
-    if (text === "" || isNoIssueSentinel(text)) continue;
+    rawItemCount += 1;
+    if (isNoIssueSentinel(text)) {
+      sentinelPresent = true;
+      continue;
+    }
     records.push({
       id: nextIssueId(DESIGN_ISSUE_ID_PREFIX, round, records),
       origin: String(round),
@@ -248,7 +272,31 @@ function parseLedgerLines(
       text,
     });
   }
-  return records;
+  return { records, sentinelPresent, rawItemCount };
+}
+
+/**
+ * Result of scanning one `## Issues` section body in a single pass.
+ * `rawItemCount` counts candidate items INCLUDING sentinel lines — the
+ * verifier's "PASS without an explicit sentinel" rule needs that raw view.
+ */
+export interface IssueSectionScan {
+  /** Normalized records (sentinels stripped, defaults applied). */
+  records: DesignReviewIssueRecord[];
+  /** True when an exact whole-item no-issue sentinel line/cell is present. */
+  sentinelPresent: boolean;
+  /** Candidate item count including sentinel lines (excludes headers/separators). */
+  rawItemCount: number;
+}
+
+/**
+ * Shared single-pass scan for both report sections (verifier entry point).
+ */
+export function scanIssuesSection(
+  lines: readonly string[],
+  round: number,
+): IssueSectionScan {
+  return walkIssuesSection(lines, round);
 }
 
 /**
@@ -261,7 +309,7 @@ export function parseIssuesSection(
   lines: readonly string[],
   round: number,
 ): DesignReviewIssueRecord[] {
-  return parseLedgerLines(lines, round);
+  return walkIssuesSection(lines, round).records;
 }
 
 /**
@@ -272,7 +320,7 @@ export function parseIssueLedgerSection(
   lines: readonly string[],
   round: number,
 ): DesignReviewIssueRecord[] {
-  return parseLedgerLines(lines, round);
+  return walkIssuesSection(lines, round).records;
 }
 
 /**

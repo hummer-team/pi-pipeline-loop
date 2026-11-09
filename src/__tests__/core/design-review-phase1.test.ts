@@ -85,7 +85,15 @@ function templateFormReport(opts: {
     "",
     "## Issues",
     "",
-    ...(issues.length > 0 ? issues.map((i, idx) => `${idx + 1}. ${i}`) : ["None"]),
+    // 229 Phase 1 (F1): FAIL fixtures carry legal BLOCKING four-column rows
+    // (fail-closed severity gate); bullet-only legacy items never verify.
+    ...(issues.length > 0
+      ? [
+          "| ID | Severity | Evidence | Summary |",
+          "| --- | --- | --- | --- |",
+          ...issues.map((i, idx) => `| DR-${opts.round}-${idx + 1} | Blocker | failing assertion #${idx + 1} | ${i} |`),
+        ]
+      : ["None"]),
     "",
     "## Verdict",
     "",
@@ -143,9 +151,9 @@ describe("Phase 1 successor A: domain snapshot verdict (single contract)", () =>
       ],
     });
     const v = verifyDesignReviewReportSnapshot(content, expectation(planDoc));
-    if (v.verdict !== "fail") throw new Error(`expected fail, got ${v.verdict}`);
-    // Stronger than the old reason-string check: exact issue ids + texts
-    expect(v.issues.map((i) => i.issueId)).toEqual(["1", "2", "3"]);
+    if (v.verdict !== "fail") throw new Error(`expected fail, got ${v.verdict}: ${JSON.stringify(v)}`);
+    // 229 B18: STABLE `DR-<round>-n` ids across every extraction path.
+    expect(v.issues.map((i) => i.issueId)).toEqual(["DR-1-1", "DR-1-2", "DR-1-3"]);
     expect(v.issues.map((i) => i.text)).toEqual([
       "Missing error handling strategy",
       "No security considerations",

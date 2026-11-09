@@ -403,10 +403,16 @@ describe("193 Phase 0: sentinel and verdict semantics on a complete report", () 
     }
   });
 
+  // 229 note (B11): these four cases PIN the PRE-229 verdict semantics on
+  // legacy (severity-less) report shapes — they run with `severityGate: false`
+  // so the blocking-set rewrite of the verdict rule cannot touch them. The new
+  // rule is covered in src/__tests__/design-review/severity-gate.test.ts.
+
   it("'None' as a bare item among real issues still FAILs", () => {
     const v = verifyDesignReviewReportSnapshot(
       completeReport({ verdict: "FAIL", issuesBody: "None\n1. Concrete defect." }),
       EXPECTATION,
+      { severityGate: false },
     );
     expect(v.verdict).toBe("fail");
     if (v.verdict === "fail") expect(v.issues.length).toBe(1);
@@ -418,6 +424,7 @@ describe("193 Phase 0: sentinel and verdict semantics on a complete report", () 
     const v = verifyDesignReviewReportSnapshot(
       completeReport({ issuesBody: "### Reviewed\n\nsee above" }),
       EXPECTATION,
+      { severityGate: false },
     );
     expect(v.verdict).toBe("fail");
     if (v.verdict === "fail") {
@@ -429,6 +436,7 @@ describe("193 Phase 0: sentinel and verdict semantics on a complete report", () 
     const v = verifyDesignReviewReportSnapshot(
       completeReport({ verdict: "PASS", issuesBody: "1. Blocking defect." }),
       EXPECTATION,
+      { severityGate: false },
     );
     expect(v.verdict).toBe("fail");
     if (v.verdict === "fail") {
@@ -441,6 +449,7 @@ describe("193 Phase 0: sentinel and verdict semantics on a complete report", () 
     const v = verifyDesignReviewReportSnapshot(
       completeReport({ verdict: "FAIL", issuesBody: "1. A\n2. B\n- C" }),
       EXPECTATION,
+      { severityGate: false },
     );
     expect(v.verdict).toBe("fail");
     if (v.verdict === "fail") expect(v.issues.length).toBe(3);

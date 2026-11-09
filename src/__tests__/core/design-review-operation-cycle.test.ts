@@ -139,8 +139,11 @@ describe("192 Phase 1: single-session operation cycle (F01 capture)", () => {
       "**Design Review: FAIL**",
       "",
       "## Issues",
-      "1. Missing error handling",
-      "2. Incomplete specification",
+      // 229 Phase 1 (F1): legal BLOCKING rows (fail-closed severity gate).
+      "| ID | Severity | Evidence | Summary |",
+      "| --- | --- | --- | --- |",
+      "| DR-1-1 | Blocker | failing assertion | Missing error handling |",
+      "| DR-1-2 | Blocker | missing AC coverage | Incomplete specification |",
       "",
     ].join("\n"), "utf-8");
 
@@ -175,7 +178,8 @@ describe("192 Phase 1: single-session operation cycle (F01 capture)", () => {
     expect(receipt.reportHash).toBeDefined();
     expect(afterFail.outcome!.reportHash).toBe(receipt.reportHash);
     expect(receipt.inputPlanHash).toBe(planHash);
-    expect(receipt.issueIds).toEqual(["1", "2"]);
+    // 229 Phase 1 (B18): STABLE `DR-<round>-n` receipt ids.
+    expect(receipt.issueIds).toEqual(["DR-1-1", "DR-1-2"]);
     expect(afterFail.outcome?.verdict).toBe("fail");
 
     // Update dispatched exactly once (total spawns: review + update = 2)
@@ -214,14 +218,15 @@ describe("192 Phase 1: single-session operation cycle (F01 capture)", () => {
         updateOperationId: updateOpId,
         baselinePlanHash: planHash,
         dispositions: [
+          // 229 Phase 1 (B18): receipt rows match the report's STABLE ids.
           {
-            issueId: "1",
+            issueId: "DR-1-1",
             text: "Missing error handling",
             disposition: "fixed",
             justification: "added the error handling section",
           },
           {
-            issueId: "2",
+            issueId: "DR-1-2",
             text: "Incomplete specification",
             disposition: "fixed",
             justification: "expanded the specification",
@@ -357,7 +362,10 @@ describe("192 Phase 1: single-session operation cycle (F01 capture)", () => {
         "**Design Review: FAIL**",
         "",
         "## Issues",
-        "1. Missing error handling",
+        // 229 Phase 1 (F1): legal blocking row (fail-closed severity gate).
+        "| ID | Severity | Evidence | Summary |",
+        "| --- | --- | --- | --- |",
+        "| DR-1-1 | Blocker | failing assertion | Missing error handling |",
         "",
       ].join("\n"), "utf-8");
 

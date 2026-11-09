@@ -48,7 +48,7 @@
 
 import { createHash } from "node:crypto";
 import * as path from "node:path";
-import type { ReviewIssue } from "../../types";
+import type { DesignReviewIssueRecord, ReviewIssue } from "../../types";
 import {
   DEFAULT_ISSUE_HEADING_PATTERN,
   compileHeadingRe,
@@ -60,6 +60,11 @@ import {
   checkDesignReviewReportSections,
   findDesignReviewIdentityValue,
 } from "../design-review/report-contract";
+import {
+  hasEvidence,
+  isBlockingSeverity,
+  scanIssuesSection,
+} from "../design-review/issue-ledger";
 import { parseDesignReviewSmartDecision } from "../design-review/smart-decision";
 import type { SmartPlanRevisionDecision } from "../design-review/decision-types";
 
@@ -112,36 +117,6 @@ export function computeReportHash(content: string): string {
   return createHash("sha256").update(content, "utf-8").digest("hex");
 }
 
-/** Extract list/table issue items from the Issues section body. */
-function parseIssueItems(sectionLines: readonly string[]): string[] {
-  const items: string[] = [];
-  for (const line of sectionLines) {
-    const bullet = line.match(/^\s*(?:[-*+]|\d+[.)])\s+(.+)$/);
-    if (bullet) {
-      items.push(bullet[1]!.trim());
-      continue;
-    }
-    const tableRow = line.match(/^\s*\|(.+)\|\s*$/);
-    if (tableRow && !/^\s*\|[\s:|-]+\|\s*$/.test(line)) {
-      const cells = tableRow[1]!.split("|").map((c) => c.trim());
-      const first = cells[0]?.toLowerCase() ?? "";
-      if (first === "#" || first === "issue" || first === "问题" || first === "") continue;
-      // Prefer the "Issue" column when a 3+ column table is used
-      const text = cells.length >= 2 ? (cells[1] ?? cells[0]!) : cells[0]!;
-      if (text && text.toLowerCase() !== "issue") items.push(text);
-      continue;
-    }
-    // Bare (non-list, non-heading, non-table) non-empty lines in the Issues
-    // section count as items — the canonical no-issues sentinel ("None"/"无")
-    // is written this way and MUST be visible to the sentinel check.
-    const trimmed = line.trim();
-    if (trimmed !== "" && !/^#/.test(trimmed)) {
-      items.push(trimmed);
-    }
-  }
-  return items;
-}
-
 function sameCanonicalPath(a: string, b: string): boolean {
   try {
     return path.resolve(a) === path.resolve(b);
@@ -150,35 +125,25 @@ function sameCanonicalPath(a: string, b: string): boolean {
   }
 }
 
-/** Exact whole-item sentinels meaning "no issues". */
-const NO_ISSUE_SENTINELS = new Set(["none", "无", "n/a", "not applicable"]);
-
-/** Keep only valid issue items: exact whole-item "None"/"无"-style sentinels
- *  drop out; everything else ("无法恢复…", "nonequivalent") stays an issue. */
-function filterValidIssueItems(rawItems: readonly string[]): ReviewIssue[] {
-  const out: ReviewIssue[] = [];
-  for (const item of rawItems) {
-    const normalized = item.replace(/\*\*|__/g, "").trim().toLowerCase();
-    if (NO_ISSUE_SENTINELS.has(normalized)) continue;
-    out.push({ issueId: String(out.length + 1), text: item });
-  }
-  return out;
-}
-
 /**
- * 192 fix (issue 3): canonical issue extraction over a report SNAPSHOT.
- * Exposes the SAME semantics the snapshot verdict uses (inert-line exclusion,
- * heading-scoped section, exact whole-item sentinels) so report-path consumers
- * (coordinator recovery) never fall back to a second, weaker parser.
+ * 229 Phase 1 (B18): canonical issue extraction over a report SNAPSHOT.
+ * Delegates to the SAME header-aware single-pass scan the verdict uses
+ * (inert-line exclusion, heading-scoped section, exact whole-item sentinels)
+ * so report-path consumers (coordinator recovery) never fall back to a second,
+ * weaker parser. `round` binds generated stable ids (`DR-<round>-n`).
  */
 export function extractDesignReviewIssueItems(
   content: string,
   issueHeadingPattern?: string,
+  round = 1,
 ): ReviewIssue[] {
   const lines = stripInertLines(content);
   const section = extractReportSection(lines, compileHeadingRe(issueHeadingPattern, DEFAULT_ISSUE_HEADING_PATTERN));
   if (!section) return [];
-  return filterValidIssueItems(parseIssueItems(section.lines));
+  return scanIssuesSection(section.lines, round).records.map((r) => ({
+    issueId: r.id,
+    text: r.text,
+  }));
 }
 
 /** Map a captured verdict token to pass/fail (不通过/FAIL/fail → fail). */
@@ -230,6 +195,20 @@ export function verifyDesignReviewReportSnapshot(
     verdictPatterns?: readonly string[];
     issueHeadingPattern?: string;
     smartDecisionMode?: boolean;
+    /**
+     * 229 Phase 1 (F1/B11): blocking-set gate. Default TRUE — a verdict is
+     * gated on BLOCKING issues (Blocker/High with Evidence) instead of "any
+     * valid issue ⇒ FAIL". Pass `false` ONLY in tests/rollback to restore the
+     * pre-229 verdict semantics verbatim (legacy reads of old templates).
+     */
+    severityGate?: boolean;
+    /**
+     * 229 Phase 2 (F2): require the cross-round `## Issue Ledger` and enforce
+     * closure over `previousOpenIssues`. Phase 1 only reserves the option.
+     */
+    requireIssueLedger?: boolean;
+    /** 229 Phase 2 (F2): previous round's open/carry-over records (closure input). */
+    previousOpenIssues?: readonly DesignReviewIssueRecord[];
   },
 ): DesignReviewReportVerdict {
   const reportHash = computeReportHash(content);
@@ -332,13 +311,13 @@ export function verifyDesignReviewReportSnapshot(
     return { verdict: "invalid", failures: ["missing Issues section heading"], reportHash };
   }
 
-  const rawItems = parseIssueItems(issuesSection.lines);
-  // Exact whole-item sentinel only; "无法恢复…" / "nonequivalent" still count
-  const validIssues = filterValidIssueItems(rawItems);
-
-  const sentinelPresent = rawItems.some((i) =>
-    NO_ISSUE_SENTINELS.has(i.replace(/\*\*|__/g, "").trim().toLowerCase()),
-  );
+  // 229 Phase 1 (F1/B18): ONE header-aware enumeration (issue-ledger scan).
+  // Sentinels are stripped BEFORE record construction (问题 11); stable ids
+  // (`DR-<round>-n`) are shared with the report/ledger/receipt end-to-end.
+  const scan = scanIssuesSection(issuesSection.lines, expectation.round);
+  const records = scan.records;
+  const issues: ReviewIssue[] = records.map((r) => ({ issueId: r.id, text: r.text }));
+  const sentinelPresent = scan.sentinelPresent;
 
   if (issuesSection.empty && seen.length > 0) {
     return {
@@ -348,14 +327,63 @@ export function verifyDesignReviewReportSnapshot(
     };
   }
 
-  // ── 5. Decision order ──────────────────────────────────────────────────────
-  if (validIssues.length > 0) {
-    // Issues take precedence: even a PASS conclusion cannot mask valid issues
+  // ── 5. Decision order (229 F1 strict order) ──────────────────────────────
+  const hasPass = seen.some((s) => s.value === "pass");
+  const hasFail = seen.some((s) => s.value === "fail");
+
+  // Rule 2 (kept verbatim): PASS needs the sentinel when the section carries
+  // no candidate items at all (raw count includes sentinel lines).
+  if (hasPass && !sentinelPresent && scan.rawItemCount === 0) {
+    return {
+      verdict: "invalid",
+      failures: ["PASS without an explicit no-issues sentinel item"],
+      reportHash,
+    };
+  }
+
+  const severityGateOn = options?.severityGate !== false;
+  if (severityGateOn) {
+    // Rule 3 (两轨一致): record legality — every non-sentinel record needs a
+    // legal severity; blocking records additionally need Evidence.
+    const legality: string[] = [];
+    for (const r of records) {
+      if (r.severity === undefined) {
+        legality.push(
+          `issue "${r.id}" is missing a legal severity (Blocker | High | Medium | Low required)`,
+        );
+        continue;
+      }
+      if (isBlockingSeverity(r.severity) && !hasEvidence(r)) {
+        legality.push(
+          `blocking issue "${r.id}" (${r.severity}) requires Evidence (command / assertion / commit)`,
+        );
+      }
+    }
+    if (legality.length > 0) {
+      return { verdict: "invalid", failures: legality, reportHash };
+    }
+
+    // Rule 4: ANY blocking issue ⇒ fail — even under a PASS conclusion.
+    const blocking = records.filter((r) => isBlockingSeverity(r.severity));
+    if (blocking.length > 0) {
+      const passAlsoPresent = hasPass;
+      const blockingText = blocking.map((r) => r.id).join(", ");
+      const base = {
+        reportHash,
+        issues,
+        reason: passAlsoPresent
+          ? "blocking issues present — issues take precedence over PASS conclusion"
+          : `blocking issues present: ${blockingText}`,
+      };
+      return applySmartDecisionGate(base, lines, options?.smartDecisionMode);
+    }
+  } else if (issues.length > 0) {
+    // severityGate:false — pre-229 verdict rule verbatim: any valid issue fails.
     const passAlsoPresent = seen.some((s) => s.value === "pass");
     return applySmartDecisionGate(
       {
         reportHash,
-        issues: validIssues,
+        issues,
         reason: passAlsoPresent
           ? "valid issues present — issues take precedence over PASS conclusion"
           : "valid issues present",
@@ -365,14 +393,12 @@ export function verifyDesignReviewReportSnapshot(
     );
   }
 
-  const hasPass = seen.some((s) => s.value === "pass");
-  const hasFail = seen.some((s) => s.value === "fail");
+  // Rule 5: verdict branches (mutually exclusive check kept verbatim).
   if (hasPass && hasFail) {
     return { verdict: "invalid", failures: ["mutually exclusive PASS and FAIL conclusions"], reportHash };
   }
-  if (seen.length > 1 && hasPass && !hasFail) {
-    // multiple PASS lines are tolerated (same conclusion repeated)
-    return { verdict: "pass", reportHash, issues: [], reason: "canonical single PASS conclusion" };
+  if (hasPass) {
+    return { verdict: "pass", reportHash, issues, reason: "canonical single PASS conclusion" };
   }
   if (hasFail) {
     return applySmartDecisionGate(
@@ -388,16 +414,6 @@ export function verifyDesignReviewReportSnapshot(
       lines,
       options?.smartDecisionMode,
     );
-  }
-  if (hasPass) {
-    if (!sentinelPresent && rawItems.length === 0) {
-      return {
-        verdict: "invalid",
-        failures: ["PASS without an explicit no-issues sentinel item"],
-        reportHash,
-      };
-    }
-    return { verdict: "pass", reportHash, issues: [], reason: "canonical single PASS conclusion" };
   }
   return { verdict: "invalid", failures: ["no recognized verdict conclusion line"], reportHash };
 }

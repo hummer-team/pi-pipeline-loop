@@ -513,6 +513,9 @@ async function computeDesignReviewDomainOutcome(
       verdictPatterns: anchors.anchors.verdict?.patterns,
       issueHeadingPattern: anchors.anchors.issueHeading?.patterns[0],
       smartDecisionMode: reviewConfirmMode === "smart",
+      // 229 Phase 1 (B11): severityGate stays at its fail-closed default;
+      // 229 Phase 2 computes requireIssueLedger/previousOpenIssues and passes
+      // them here (option positions reserved now — see design-review-verifier).
     });
     if (v.verdict === "invalid") {
       return {

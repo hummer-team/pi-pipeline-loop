@@ -152,14 +152,18 @@ describe("192 Phase 3: issues precedence and verdict semantics", () => {
       "**Design Review: PASS**",
       "",
       "## Issues",
-      "1. Missing error handling",
-      "2. 接口契约未定义",
+      "| ID | Severity | Evidence | Summary |",
+      "| --- | --- | --- | --- |",
+      "| DR-2-1 | Blocker | failing assertion | Missing error handling |",
+      "| DR-2-2 | Blocker | conflicting contract row | 接口契约未定义 |",
       "",
     ].join("\n");
     const v = verifyDesignReviewReportSnapshot(content, expectation());
+    // 229 Phase 1 (F1): under the blocking gate a FAIL needs a BLOCKING issue
+    // (the PASS + Medium-only case became pass — covered in severity-gate.test).
     expect(v.verdict).toBe("fail");
     if (v.verdict === "fail") {
-      expect(v.issues.map((i) => i.issueId)).toEqual(["1", "2"]);
+      expect(v.issues.map((i) => i.issueId)).toEqual(["DR-2-1", "DR-2-2"]);
       expect(v.reason).toContain("precedence");
     }
   });
@@ -173,7 +177,9 @@ describe("192 Phase 3: issues precedence and verdict semantics", () => {
       "**Design Review: PASS**",
       "",
       "## Issues",
-      "- 无法恢复异常派发",
+      "| ID | Severity | Evidence | Summary |",
+      "| --- | --- | --- | --- |",
+      "| DR-2-1 | Blocker | failing assertion | 无法恢复异常派发 |",
       "",
     ].join("\n");
     const v = verifyDesignReviewReportSnapshot(content, expectation());
@@ -189,7 +195,9 @@ describe("192 Phase 3: issues precedence and verdict semantics", () => {
       "**设计评审: 通过**",
       "",
       "## Issues",
-      "nonequivalent",
+      "| ID | Severity | Evidence | Summary |",
+      "| --- | --- | --- | --- |",
+      "| DR-2-1 | Blocker | failing assertion | nonequivalent |",
       "",
     ].join("\n");
     expect(verifyDesignReviewReportSnapshot(content, expectation()).verdict).toBe("fail");
@@ -227,7 +235,9 @@ describe("192 Phase 3: issues precedence and verdict semantics", () => {
         row,
         "",
         "## Issues",
-        "1. defect",
+        "| ID | Severity | Evidence | Summary |",
+        "| --- | --- | --- | --- |",
+        "| DR-2-1 | Blocker | failing assertion | defect |",
         "",
       ].join("\n");
       expect(verifyDesignReviewReportSnapshot(content, expectation()).verdict).toBe("fail");

@@ -41,7 +41,7 @@ import {
 } from "../../core/design-review/develop-transition";
 import { applyHumanDecisionChoice, clearAllHumanDecisionMenus } from "../../core/design-review/human-decision";
 import type { DesignReviewApprovalBasis } from "../../core/design-review/decision-types";
-import { makeTestConfig, makeTestMeta, makeStrictSession } from "../helpers";
+import { makeTestConfig, makeTestMeta, makeStrictSession, designReviewIssueRows } from "../helpers";
 
 const PIPE = "pipe-test-001";
 const OWNER = "/x/owner-session.json";
@@ -75,7 +75,10 @@ function report(o: {
     "",
     "## Issues",
     "",
-    ...(o.verdict === "PASS" ? ["None"] : ["1. Missing rollback plan for the migration phase"]),
+    ...(o.verdict === "PASS"
+      ? ["None"]
+      // 229 Phase 1 (F1): legal blocking row (fail-closed severity gate).
+      : designReviewIssueRows(["Missing rollback plan for the migration phase"], 1)),
     "",
   ].join("\n");
 }
@@ -231,7 +234,8 @@ describe("193 Phase 2: develop approval authorization bases", () => {
     expect(basis.kind).toBe("human-override");
     // bound to the persisted decision + issue ids + choice time
     expect(basis.decisionId).toBe(after.decision!.decisionId);
-    expect(basis.issueIds).toEqual(["1"]);
+    // 229 Phase 1 (B18): stable report id in the approval basis.
+    expect(basis.issueIds).toEqual(["DR-1-1"]);
     expect(basis.decidedAt).toBeGreaterThan(0);
 
     const basisHash = computeAuthorizationBasisHash(basis);

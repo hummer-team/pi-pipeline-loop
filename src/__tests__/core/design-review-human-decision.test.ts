@@ -58,7 +58,7 @@ import {
   HUMAN_DECISION_MAX_ISSUES,
 } from "../../core/design-review/human-decision";
 import type { HumanDecision } from "../../core/design-review/decision-types";
-import { makeTestConfig, makeTestMeta, makeStrictSession, writeStandaloneUpdateDeliverables } from "../helpers";
+import { makeTestConfig, makeTestMeta, makeStrictSession, writeStandaloneUpdateDeliverables, designReviewIssueRows } from "../helpers";
 
 const PIPE = "pipe-test-001";
 const OWNER = "/x/owner-session.json";
@@ -95,7 +95,7 @@ function report(o: {
     "",
     "## Issues",
     "",
-    ...(o.verdict === "PASS" ? ["None"] : (o.issues ?? ["1. Missing rollback plan for the migration phase"])),
+    ...(o.verdict === "PASS" ? ["None"] : designReviewIssueRows(o.issues ?? ["Missing rollback plan for the migration phase"])),
     "",
   ].join("\n");
 }
@@ -518,8 +518,8 @@ describe("193 Phase 2: human decision menu flow (coordinator)", () => {
         fs.writeFileSync(
           reportDoc,
           content.replace(
-            "1. Missing rollback plan for the migration phase",
-            "1. Missing rollback plan for the migration phase\n2. Additional late-discovered gap",
+            "Missing rollback plan for the migration phase",
+            "Missing rollback plan for the migration phase (drift marker)",
           ),
           "utf-8",
         );

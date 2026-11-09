@@ -54,7 +54,7 @@ import { loadJsonConfig, resolvePipelineConfig } from "../../core/json-config-lo
 import { __resetMemoryThrottle } from "../../utils/audit-throttle";
 import { __setSafeWriteAuditLogOverride } from "../../utils/auditLog";
 import type { DesignReviewActorInput, HumanDecision } from "../../core/design-review/decision-types";
-import { makeTestConfig, makeTestMeta, makeStrictSession } from "../helpers";
+import { makeTestConfig, makeTestMeta, makeStrictSession, designReviewIssueRows } from "../helpers";
 
 function reasonOf(r: CoordinatorResult): string {
   return (r as { reason?: string }).reason ?? "";
@@ -433,7 +433,7 @@ function report(o: {
     "",
     "## Issues",
     "",
-    ...(o.verdict === "PASS" ? ["None"] : (o.issues ?? ["1. Missing rollback plan for the migration phase"])),
+    ...(o.verdict === "PASS" ? ["None"] : designReviewIssueRows(o.issues ?? ["Missing rollback plan for the migration phase"])),
     "",
   ].join("\n");
 }

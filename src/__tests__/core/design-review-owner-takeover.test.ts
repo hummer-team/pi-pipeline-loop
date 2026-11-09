@@ -56,7 +56,7 @@ import type {
   HumanDecisionRecordBase,
 } from "../../core/design-review/decision-types";
 import type { DesignReviewState } from "../../types";
-import { makeTestConfig, makeTestMeta, makeStrictSession } from "../helpers";
+import { makeTestConfig, makeTestMeta, makeStrictSession, designReviewIssueRows } from "../helpers";
 
 const PIPE = "pipe-213-tk";
 const GONE = "/x/gone-child-session.json";
@@ -430,7 +430,7 @@ function report(o: { planDoc: string; operationId: string; inputHash: string; ve
     "",
     "## Issues",
     "",
-    ...(o.verdict === "PASS" ? ["None"] : (o.issues ?? ["1. Missing rollback plan for the migration phase"])),
+    ...(o.verdict === "PASS" ? ["None"] : designReviewIssueRows(o.issues ?? ["Missing rollback plan for the migration phase"])),
     "",
   ].join("\n");
 }

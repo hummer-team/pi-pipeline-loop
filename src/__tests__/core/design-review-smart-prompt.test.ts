@@ -503,8 +503,11 @@ describe("193 Phase 1: review dispatch integration (exact prompt, blocking, reco
       "**Design Review: FAIL**",
       "",
       "## Issues",
-      "1. Missing error handling",
-      "2. Incomplete specification",
+      // 229 Phase 1 (F1): legal BLOCKING rows (fail-closed severity gate).
+      "| ID | Severity | Evidence | Summary |",
+      "| --- | --- | --- | --- |",
+      "| DR-1-1 | Blocker | failing assertion | Missing error handling |",
+      "| DR-1-2 | Blocker | missing AC coverage | Incomplete specification |",
       "",
       "## Plan Revision Decision",
       "",
