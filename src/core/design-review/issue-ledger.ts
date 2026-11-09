@@ -372,8 +372,26 @@ export function evaluateNoProgress(
   if (prev === undefined || prev.loop !== next.loop) {
     return { verdict: "progress", streak: 0 };
   }
-  if (next.openIds.length < prev.openIds.length) {
+  const nextOpen = next.openIds.length;
+  const prevOpen = prev.openIds.length;
+  if (nextOpen < prevOpen) {
     return { verdict: "progress", streak: 0 };
+  }
+  // 229 Phase 4 (sidecar-chain semantics): an equal-count open set whose
+  // IDS CHANGED means the loop DID work (resolved old items while finding
+  // new ones) — for the no-progress rule, only a verbatim repetition
+  // (identical ids, count not decreased) counts as "no shrink". A GROWING
+  // set is never progress, even when ids changed.
+  if (nextOpen === prevOpen) {
+    const prevSet = new Set(prev.openIds);
+    let identityChanged = false;
+    for (const id of next.openIds) {
+      if (!prevSet.has(id)) {
+        identityChanged = true;
+        break;
+      }
+    }
+    if (identityChanged) return { verdict: "progress", streak: 0 };
   }
   const streak = (prev.streak ?? 0) + 1;
   if (streak > grace) return { verdict: "exhausted", streak };

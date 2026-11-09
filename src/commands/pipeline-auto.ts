@@ -889,6 +889,12 @@ async function startPendingDoc(input: {
 
   // M2: written AFTER startNewPipeline — buildStartMeta's updateMeta(newMeta)
   // would otherwise erase it.
+  // 229 Phase 4 (B10/R1-Q5 C): the design-review round budget is INHERITED
+  // from the sidecar of the SAME doc (sidecar lifetime = budget lifetime in
+  // the one auto job; a new job starts a fresh sidecar ⇒ a fresh budget).
+  const inheritedDocKey =
+    state.docs[target.index]?.doc ?? String(target.index);
+  const inheritedDesignReviewRounds = state.counters.designReviewRounds?.[inheritedDocKey] ?? 0;
   ctx.session?.updateMeta?.({
     autoJob: buildAutoJobMeta({
       jobId,
@@ -897,6 +903,8 @@ async function startPendingDoc(input: {
       totalDocs: state.jobTotalDocs,
       designReviewMaxRounds: job.designReview.maxRounds,
       totalLoopsBudget: job.stopConditions.maxTotalLoops,
+      inheritedDesignReviewRounds,
+      inheritedLastCountedDesignReviewRound: inheritedDesignReviewRounds,
     }),
   });
 

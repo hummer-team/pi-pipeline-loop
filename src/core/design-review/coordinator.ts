@@ -29,7 +29,8 @@ import { extractReportIssues } from "./report";
 import { runVerification, type VerificationRunResult } from "../auto-verifier";
 import { stageMigrationResetCounters } from "../stage-exit/migration-reset";
 import type { RunVerificationOptions } from "../auto-verifier";
-import type { DesignReviewPauseReason } from "../../types";
+import type { DesignReviewPauseReason, DesignReviewProgressLedger, DesignReviewIssueRecord } from "../../types";
+
 import {
   buildDesignReviewSmartPrompt,
   DesignReviewSmartPromptError,
@@ -140,7 +141,26 @@ import { shouldEmitWithinWindow } from "../../utils/audit-throttle";
 import { resolveAutoHumanFallback, applyAutoHumanFallback } from "./auto-human-fallback";
 // 227 Phase 2: the job onFail policy is read through the ONE active-job reader.
 import { readActiveJobContext } from "../auto-pipeline/config-overlay";
+import {
+  parseIssuesSection,
+  parseIssueLedgerSection,
+  computeOpenSet,
+  severityCounts,
+  evaluateNoProgress,
+} from "./issue-ledger";
+import {
+  DEFAULT_ISSUE_HEADING_PATTERN,
+  compileHeadingRe,
+  extractReportSection,
+  stripInertLines,
+} from "./report-sections";
+import {
+  readNoProgressGraceUsed,
+  bumpNoProgressGraceUsed,
+  mirrorSidecarDesignReviewRounds,
+} from "../auto-pipeline/review-no-progress";
 import * as fs from "node:fs/promises";
+import * as fsSync from "node:fs";
 import * as path from "node:path";
 
 /**
@@ -295,6 +315,14 @@ export async function coordinateDesignReview(
     if (patch) {
       const committed = ctx.session.updateMeta(patch);
       effectiveMeta = committed ?? ({ ...meta, ...patch } as SessionMeta);
+      // 229 Phase 4 (B10/R1-Q5 C): the SAME counting point MIRRORS the doc's
+      // cumulative design-review round count into the job sidecar so an
+      // auto re-run inherits the budget (`round-budget.ts` stays pure, B17).
+      // Failures only audit — budget enforcement keeps meta as truth.
+      const mirrorRounds = patch.autoJob?.designReviewRounds;
+      if (mirrorRounds !== undefined) {
+        mirrorSidecarDesignReviewRounds(ctx.config, mirrorRounds);
+      }
     }
   }
 
@@ -677,6 +705,17 @@ async function handleReviewRunning(
     return { status: "handled", action: "pending", reason: "report_identity_stale" };
   }
 
+  // 229 Phase 4 (F4/R3-Q4 B): design-review loop no-progress accounting —
+  // evaluated ONCE per verified report conclusion, from the SAME trusted
+  // outcome. A mismatched loop identity or a shrinking open set resets the
+  // streak (`evaluateNoProgress` is PURE); an exhausted streak freezes the
+  // decision (audit `no_progress_detected`) and returns immediately — the
+  // Phase-5 exhaustion exit consumes the frozen reason.
+  const progressVerdict = await noteDesignReviewNoProgress(ctx, meta, drState, reportPath);
+  if (progressVerdict !== undefined) {
+    return progressVerdict;
+  }
+
   // Check budget before transition
   // 219 Phase 3 §7c: this path CONSUMES an already dispatched review round —
   // it must NEVER freeze for the auto round budget (the Nth PASS has to be
@@ -748,9 +787,120 @@ async function handleReviewRunning(
 }
 
 /**
- * Commit a domain `paused` outcome (drift/no-change/new-decision) and return
- * pending. pauseReason comes from the trusted outcome, never guessed here.
+ * 229 Phase 4 (F4): design-review loop no-progress accounting.
+ *
+ * Snapshots the verified report's open-issue set into
+ * `designReview.progressLedger` (loop: "designReview"), evaluates it against
+ * the STORED ledger with the sidecar-funded observation grace, and — on
+ * `exhausted` — audits `no_progress_detected` and returns a frozen result
+ * (the Phase-5 exhaustion exit consumes that reason). `evaluateNoProgress`
+ * is PURE; the sidecar read-modify-write lives only in the three ctx-holding
+ * modules (B17).
  */
+async function noteDesignReviewNoProgress(
+  ctx: CoordinatorContext,
+  meta: SessionMeta,
+  drState: DesignReviewState,
+  reportPath: string,
+): Promise<CoordinatorResult | undefined> {
+  void meta;
+  // Idempotence: one evaluation per ROUND (a blocked consumption retried in
+  // the same visit must NOT double-count into the streak). The per-round
+  // ledger is the marker the transition commits then carry forward.
+  if (drState.progressLedger?.round === drState.round && drState.progressLedger.loop === "designReview") {
+    return undefined;
+  }
+  let reportLines: string[];
+  try {
+    reportLines = fsSync.readFileSync(reportPath, "utf-8").split("\n");
+  } catch {
+    reportLines = [];
+  }
+  // The SAME section-scoped parse the verifier uses (inert lines + the exact
+  // Issues heading) — a whole-file scan would read identity rows as items.
+  const sectionLines = extractReportSection(
+    stripInertLines(reportLines.join("\n")),
+    compileHeadingRe(undefined, DEFAULT_ISSUE_HEADING_PATTERN),
+  )?.lines ?? [];
+  const issueRecords = parseIssuesSection(sectionLines, drState.round);
+  // 229 Phase 4 (F4): the OPEN set joins the cross-round ledger restatement
+  // (open-family ids carried from previous rounds) with the new `## Issues`
+  // rows — sliding only over `## Issues` would mis-count a carried blocker as
+  // "new" progress even though the debt never moved.
+  const ledgerLines = extractReportSection(
+    stripInertLines(reportLines.join("\n")),
+    /^#{1,4}\s*(Issue Ledger|问题台账)\s*$/i,
+  )?.lines ?? [];
+  const ledgerRecords = parseIssueLedgerSection(ledgerLines, drState.round);
+  const merged = new Map<string, DesignReviewIssueRecord>();
+  for (const r of [...ledgerRecords, ...issueRecords]) merged.set(r.id, r);
+  const records = [...merged.values()];
+  const open = computeOpenSet(records);
+  const openIds = open.map((r) => r.id);
+  const counts = severityCounts(open);
+  const docKey = resolveSidecarDocKey(ctx);
+  const activeCtx = readActiveJobContext(ctx.config.projectRoot, docsDirsOf(ctx.config).jobsDir);
+  const graceUsed = activeCtx !== null
+    ? (readNoProgressGraceUsed(ctx.config.projectRoot, docKey) ?? 0)
+    : 0;
+  // 229 (F4 宽限): ONE observation round is granted for the FIRST flat round
+  // (`streak 1`); the SECOND consecutive flat round freezes regardless
+  // (`streak 2 > 0`). With the grace already consumed, grace = 0.
+  const effectiveGrace = graceUsed >= 1 ? 0 : 1;
+
+  const evaluation = evaluateNoProgress(drState.progressLedger, {
+    loop: "designReview" as const,
+    openIds,
+    severityCounts: counts,
+  }, effectiveGrace);
+
+  // 229 Phase 3: write the ledger INTO THE PRE-COMMIT state snapshot — the
+  // transition commits build their `designReview` from THIS object, so the
+  // accounting rides every strict commit (a parallel updateMeta write would
+  // be clobbered by the very next state commit).
+  const ledger: DesignReviewProgressLedger = {
+    loop: "designReview",
+    round: drState.round,
+    pipelineId: meta.pipelineId,
+    openIds,
+    severityCounts: counts,
+    streak: evaluation.streak,
+  };
+  drState.progressLedger = ledger;
+
+  if (evaluation.verdict === "no-progress" && activeCtx !== null) {
+    bumpNoProgressGraceUsed(ctx.config.projectRoot, docKey);
+  }
+  if (evaluation.verdict === "exhausted") {
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "no_progress_detected",
+      pipelineId: meta.pipelineId,
+      stage: "design-review",
+      round: String(drState.round),
+      streak: String(evaluation.streak),
+    });
+    return { status: "handled", action: "frozen", reason: "no_progress_detected" };
+  }
+  if (drState.progressLedger !== undefined && drState.progressLedger.loop !== "designReview") {
+    // 229 (问题 20): a mismatched loop identity reads as progress upstream —
+    // audited once here for traceability.
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "no_progress_loop_mismatch",
+      pipelineId: meta.pipelineId,
+      stage: "design-review",
+      round: String(drState.round),
+      previousLoop: String(drState.progressLedger.loop),
+    }, "info");
+  }
+  return undefined;
+}
+
+/** Sidecar docKey for the CURRENT auto doc (defaults when not running a job). */
+function resolveSidecarDocKey(ctx: CoordinatorContext): string {
+  const active = readActiveJobContext(ctx.config.projectRoot, docsDirsOf(ctx.config).jobsDir);
+  if (active === null) return "default";
+  return active.state.docs[active.state.docIndex]?.doc ?? String(active.state.docIndex);
+}
 async function pauseDomainOutcome(
   ctx: CoordinatorContext,
   meta: SessionMeta,

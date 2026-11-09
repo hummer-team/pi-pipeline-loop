@@ -191,7 +191,7 @@ describe("finalize — buildJobSummary", () => {
       status: "stopped" as const,
       startedAt: 0,
       updatedAt: 0,
-      counters: { totalLoops: 0, totalFreezes: 0, consecutiveVerifyFailures: 0, autoResumes: 0, finalGraceUsed: {} },
+      counters: { totalLoops: 0, totalFreezes: 0, consecutiveVerifyFailures: 0, autoResumes: 0, finalGraceUsed: {}, noProgressGraceUsed: {}, designReviewRounds: {} }, // 229 Phase 4 counters
       docs: [
         { doc: HARNESS_DOCS[0]!, status: "completed" as const, updatedAt: 0 },
         { doc: HARNESS_DOCS[1]!, status: "skipped" as const, updatedAt: 0 },
@@ -221,7 +221,7 @@ describe("finalize — buildJobSummary", () => {
       status: "failed" as const,
       startedAt: 0,
       updatedAt: 0,
-      counters: { totalLoops: 0, totalFreezes: 0, consecutiveVerifyFailures: 0, autoResumes: 0, finalGraceUsed: {} },
+      counters: { totalLoops: 0, totalFreezes: 0, consecutiveVerifyFailures: 0, autoResumes: 0, finalGraceUsed: {}, noProgressGraceUsed: {}, designReviewRounds: {} }, // 229 Phase 4 counters
       docs: [
         { doc: HARNESS_DOCS[0]!, status: "failed" as const, updatedAt: 0, failReason: "clarify_dispatch_failed" },
         { doc: HARNESS_DOCS[1]!, status: "pending" as const, updatedAt: 0 },

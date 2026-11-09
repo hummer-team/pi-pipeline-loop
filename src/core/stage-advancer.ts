@@ -21,9 +21,12 @@
  */
 
 import * as fs from "node:fs/promises";
+import * as fsPathSync from "node:fs";
 import type { PipelineConfig, Tool, SessionMeta, PipelineStage, ExecFn, ConfirmMode, StageConfig } from "../types";
 // 225 Phase 3: review executor liveness (shared with the settle-side exit gate).
 import { isReviewExecutorLive } from "./review-exit-gate";
+// 229 Phase 4 (F4): review/fix-loop no-progress detection + freeze signaling.
+import { noteReviewRoundOutcome } from "./auto-pipeline/review-no-progress";
 import { createPipelineUI, syncStageStatusBar } from "./pipeline-ui";
 import { runVerification, precheckRequiredFiles, resolvePlanDocPath, planDocHasConfirmMarker } from "./auto-verifier";
 import { autoAdvanceAfterVerify } from "./verify-advance";
@@ -51,7 +54,7 @@ import {
 } from "./stage-executor/transition-commit";
 import { checkStageSummaryHash } from "../utils/summary-hash";
 import { DEFAULT_CONFIRM_MAX_REJECTIONS, DEFAULT_SPAWN_WAIT_TIMEOUT_MS, DECISION_DISMISS_INTERRUPT_MS, AUDIT_THROTTLE_WINDOW_MS, DEFAULT_DESIGN_DIR } from "../constants";
-import { buildPlanDocGlob, docsDirsOf } from "../docs-paths";
+import { buildPlanDocGlob, docsDirsOf, codeReviewDocFileName, reqBaseFromRequirementDoc } from "../docs-paths";
 import { shouldEmitWithinWindow } from "../utils/audit-throttle";
 import { findLatestReviewReport } from "../utils/review-conclusion";
 import { spawnStageSubagent, resolveAgentMention } from "../utils/subagent-rpc";
@@ -208,6 +211,59 @@ async function resolveStageDocPath(
     return findLatestReviewReport(config.projectRoot, docsDirsOf(config).reviewDir);
   }
   return null;
+}
+
+/**
+ * 229 Phase 4 (F4 / question 9): the review/fix loop's no-progress gate for
+ * the stage-advancer declaration path (wraps `noteReviewRoundOutcome`).
+ *
+ * Reads the CURRENT round's review report (the per-round `Code_Review_…_N`
+ * name from the round ledger; falls back to the mtime-latest report) and
+ * evaluates the ledger. Returns a frozen FAILURE result when
+ * `no_progress_detected` exhausted the open set — the caller MUST return
+ * immediately (no debt write, no routing, no commit). Returns `undefined`
+ * (continue) otherwise, regardless of job presence (human mode counts too).
+ */
+async function noteReviewRoundOutcomeForStageAdvancer(
+  config: PipelineConfig,
+  ctx: Parameters<NonNullable<Tool["execute"]>>[1] extends infer C ? NonNullable<C> : never,
+  meta: SessionMeta,
+): Promise<{ success: boolean; message: string; currentStage: PipelineStage } | undefined> {
+  const roundIndex = meta.reviewRound?.index ?? 1;
+  let reportPath: string | null = null;
+  const reqBase = reqBaseFromRequirementDoc(meta.requirementDoc ?? "");
+  if (meta.reviewRound?.stageStartTime === meta.stageStartTime) {
+    const relative = `${docsDirsOf(config).reviewDir.replace(/\/+$/, "")}/${codeReviewDocFileName(reqBase, roundIndex)}`;
+    const abs = relative.startsWith("/") ? relative : `${config.projectRoot}/${relative}`;
+    try {
+      if (fsPathSync.existsSync(abs)) reportPath = abs;
+    } catch {
+      reportPath = null;
+    }
+  }
+  if (reportPath === null) {
+    const latest = await findLatestReviewReport(config.projectRoot, docsDirsOf(config).reviewDir);
+    if (latest !== null) reportPath = latest;
+  }
+  if (reportPath === null) return undefined;
+
+  const outcome = await noteReviewRoundOutcome({
+    config,
+    meta,
+    // stage-advancer's ctx session adapter shape matches the minimal contract
+    session: ctx.session as never,
+    reportPath,
+    round: roundIndex,
+  });
+  if (outcome.frozen) {
+    return {
+      success: false,
+      message:
+        "Review made no progress: the open issue set did not shrink for the granted rounds. Pipeline frozen under no_progress_detected.",
+      currentStage: (ctx.session.getMeta() as SessionMeta | undefined)?.currentStage ?? meta.currentStage,
+    };
+  }
+  return undefined;
 }
 
 /**
@@ -2000,7 +2056,14 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       // pass in the same visit" (or any other path) leaves no routing debt to
       // be consumed at settle. The fail branch below re-writes the debt after
       // this clear, so an actual fail declaration keeps its deferral semantics.
+      //
+      // 229 Phase 4 (F4/question 9): the review/fix loop's no-progress ledger
+      // is evaluated AT DECLARATION TIME. `frozen` ⇒ IMMEDIATE return — no
+      // debt write, no routing, no commit (the module already froze the flow
+      // and audited `no_progress_detected`).
       if (currentStage === "review" && argReviewConclusion) {
+        const outcome = await noteReviewRoundOutcomeForStageAdvancer(config, ctx, meta);
+        if (outcome !== undefined) return outcome;
         ctx.session.updateMeta({ reviewConclusionDeclared: true, reviewPendingFail: undefined });
       }
       if (argReviewConclusion && currentStage !== "review") {

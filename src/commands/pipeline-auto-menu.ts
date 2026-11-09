@@ -245,15 +245,24 @@ export function buildAutoJobMeta(input: {
   designReviewMaxRounds: number;
   /** Phase 6 §3: the job's `stopConditions.maxTotalLoops` (remaining-budget display). */
   totalLoopsBudget?: number;
+  /**
+   * 229 Phase 4 (B10/R1-Q5 C): the design-review round budget INHERITED from
+   * the SAME doc's sidecar counter (sidecar lifetime: re-runs continue, a
+   * fresh job restarts the budget). Default 0 (fresh doc / human track).
+   */
+  inheritedDesignReviewRounds?: number;
+  /** Co-inherited dedupe watermark (defaults to the inherited round count). */
+  inheritedLastCountedDesignReviewRound?: number;
 }): NonNullable<SessionMeta["autoJob"]> {
+  const inheritedRounds = input.inheritedDesignReviewRounds ?? 0;
   return {
     jobId: input.jobId,
     jobPath: input.jobPath,
     docIndex: input.docIndex,
     totalDocs: input.totalDocs,
     designReviewMaxRounds: input.designReviewMaxRounds,
-    designReviewRounds: 0,
-    lastCountedDesignReviewRound: 0,
+    designReviewRounds: inheritedRounds,
+    lastCountedDesignReviewRound: input.inheritedLastCountedDesignReviewRound ?? (inheritedRounds > 0 ? inheritedRounds : 0),
     ...(input.totalLoopsBudget !== undefined ? { totalLoopsBudget: input.totalLoopsBudget } : {}),
   };
 }

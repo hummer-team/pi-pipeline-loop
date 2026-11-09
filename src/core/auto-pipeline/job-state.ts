@@ -130,6 +130,20 @@ export interface AutoJobState {
     consecutiveVerifyFailures: number;
     autoResumes: number;
     finalGraceUsed: Record<string, number>;
+    /**
+     * 229 Phase 4 (F4/B10): per-DOC no-progress observation grace for BOTH
+     * loops (review/fix via `review-no-progress`, design-review via the
+     * coordinator). INDEPENDENT of `finalGraceUsed` — one being exhausted
+     * never consumes the other; progress resets the doc's counter to 0.
+     */
+    noProgressGraceUsed: Record<string, number>;
+    /**
+     * 229 Phase 4 (B10/R1-Q5 C): the cumulative design-review round count
+     * INHERITED across re-runs of the SAME doc (sidecar lifetime). The
+     * coordinator mirrors its dispatch counter here at the counting point;
+     * a fresh job = a fresh sidecar = a fresh budget (never `resetOnStart`).
+     */
+    designReviewRounds: Record<string, number>;
   };
   docs: AutoJobDocProgress[];
   stopReason?: AutoJobStopReason;
@@ -494,7 +508,7 @@ export function createJobState(input: {
     status: "idle",
     startedAt: now,
     updatedAt: now,
-    counters: { totalLoops: 0, totalFreezes: 0, consecutiveVerifyFailures: 0, autoResumes: 0, finalGraceUsed: {} },
+    counters: { totalLoops: 0, totalFreezes: 0, consecutiveVerifyFailures: 0, autoResumes: 0, finalGraceUsed: {}, noProgressGraceUsed: {}, designReviewRounds: {} },
     docs: input.docs.map((doc) => ({ doc: doc.doc, status: "pending", updatedAt: now })),
   };
 }

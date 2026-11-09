@@ -273,6 +273,20 @@ describe("229 Phase 0: evaluateNoProgress (F4)", () => {
     expect(evaluateNoProgress(snap(["a"], 0), snap(["a", "b"]), 2).verdict).toBe("no-progress");
   });
 
+  it("equal count with CHANGED ids counts as progress (the loop moved, 229 Phase 4)", () => {
+    expect(evaluateNoProgress(snap(["a", "b"], 0), snap(["b", "c"]), 2)).toEqual({
+      verdict: "progress",
+      streak: 0,
+    });
+  });
+
+  it("equal count with the IDENTICAL id set stays a flat repetition", () => {
+    expect(evaluateNoProgress(snap(["b", "a"], 0), snap(["a", "b"]), 2)).toEqual({
+      verdict: "no-progress",
+      streak: 1,
+    });
+  });
+
   it("two consecutive flat rounds turn exhausted once the grace is used up", () => {
     expect(evaluateNoProgress(snap(["a", "b"], 1), snap(["a", "b"]), 1)).toEqual({
       verdict: "exhausted",
