@@ -1,7 +1,6 @@
 /**
  * @module auto-pipeline/review-no-progress
- * 229 Phase 4 (F4/R3-Q4 B): the review/fix loop's no-progress detection,
- * ledger accounting and early stop.
+ * Review/fix loop no-progress detection, ledger accounting and early stop.
  *
  * Facts (boundaries):
  * - loop identity: the review/fix ledger (`meta.reviewLedger.designReview →
@@ -9,9 +8,10 @@
  *   (`meta.designReview.progressLedger`): `evaluateNoProgress` pins the loop
  *   and a mismatch reads as progress (`no_progress_loop_mismatch` upstream).
  * - parseReviewFindings supports BOTH shapes of the shipped review report:
- *   the bullet-list template (`### 问题 N` + `等级：/是否修复：`) and tables
- *   with a severity column. Reports without an ID column get mechanical
- *   `CR-<round>-<n>` ids (问题 6).
+ *   the bullet-list template (`### <issue heading>` plus severity / status /
+ *   evidence field lines, bilingual aliases accepted) and tables with a
+ *   severity column. Reports without an ID column get mechanical
+ *   `CR-<round>-<n>` ids.
  * - B17: the sidecar read-modify-write lives HERE and at the coordinator /
  *   pipeline-auto only; `round-budget.ts` and `issue-ledger.ts` stay pure.
  * - Question 9 contract: the freeze is signaled (`frozen: true`) so callers
@@ -20,7 +20,7 @@
  */
 
 import * as fs from "node:fs";
-import type { DesignReviewIssueRecord, IssueSeverity, SessionMeta, PipelineConfig } from "../../types";
+import type { DesignReviewIssueRecord, IssueSeverity, IssueStatus, SessionMeta, PipelineConfig } from "../../types";
 import { severityCounts, evaluateNoProgress, computeOpenSet, type NoProgressEvaluation } from "../design-review/issue-ledger";
 import type { ReviewFixProgressLedger } from "../../types";
 import { auditAutoDiagnostic } from "./diagnostics";
@@ -28,9 +28,9 @@ import { readActiveJobContext } from "./config-overlay";
 import { writeJobState } from "./job-state";
 
 /** Parse one severity token (bilingual aliases included). */
-function parseSeverityToken(raw: string): string | undefined {
+function parseSeverityToken(raw: string): IssueSeverity | undefined {
   const token = raw.trim().toLowerCase();
-  if (token === "blocker" || token === "blocker") return "Blocker";
+  if (token === "blocker") return "Blocker";
   if (token === "high") return "High";
   if (token === "medium") return "Medium";
   if (token === "low") return "Low";
@@ -41,8 +41,8 @@ function parseSeverityToken(raw: string): string | undefined {
   return undefined;
 }
 
-/** Parse the 是否修复 status token. Unknown values read as open (问题 10). */
-function parseFixStatus(raw: string): string {
+/** Parse one fix-status token (bilingual). Unknown values read as open. */
+function parseFixStatus(raw: string): IssueStatus {
   const token = raw.trim();
   if (/^(已修复|fixed)$/i.test(token)) return "fixed";
   if (/^(接受风险|accepted-risk)$/i.test(token)) return "accepted-risk";
@@ -50,7 +50,13 @@ function parseFixStatus(raw: string): string {
   return "open";
 }
 
-/** Parse one list-form report block (`### 问题 N` bullets). */
+/**
+ * Parse one list-form report block (`### <issue heading>` bullets). An
+ * explicit ID field (either alias) WINS over the mechanical
+ * `CR-<round>-<n>` default: a report that reuses `CR-1-1` in round 2 keeps that
+ * id, which is what makes the cross-round no-progress evaluation able to see a
+ * repeated finding instead of a fresh one every round.
+ */
 function parseListFindings(lines: readonly string[], round: number): DesignReviewIssueRecord[] {
   const records: DesignReviewIssueRecord[] = [];
   let current: DesignReviewIssueRecord | null = null;
@@ -68,15 +74,21 @@ function parseListFindings(lines: readonly string[], round: number): DesignRevie
       continue;
     }
     if (current === null) continue;
+    const idField = /^[-*]?\s*(?:ID|编号)\s*[:：]\s*(.+)$/i.exec(trimmed);
+    if (idField && idField[1] !== undefined) {
+      const value = idField[1].trim();
+      if (value !== "") current.id = value;
+      continue;
+    }
     const sev = /^[-*]?\s*(?:等级|severity)\s*[:：]\s*(.+)$/i.exec(trimmed);
     if (sev && sev[1] !== undefined) {
       const value = parseSeverityToken(sev[1]);
-      if (value !== undefined) current.severity = value as DesignReviewIssueRecord["severity"];
+      if (value !== undefined) current.severity = value;
       continue;
     }
     const fixStatus = /^[-*]?\s*(?:是否修复|状态)\s*[:：]\s*(.+)$/.exec(trimmed);
     if (fixStatus && fixStatus[1] !== undefined) {
-      current.status = parseFixStatus(fixStatus[1]) as DesignReviewIssueRecord["status"];
+      current.status = parseFixStatus(fixStatus[1]);
       continue;
     }
     const evidence = /^[-*]?\s*(?:证据|evidence)\s*[:：]\s*(.+)$/i.exec(trimmed);
@@ -120,8 +132,8 @@ function parseTableFindings(lines: readonly string[], round: number): DesignRevi
     records.push({
       id,
       origin: String(round),
-      ...(severity !== undefined ? { severity: severity as DesignReviewIssueRecord["severity"] } : {}),
-      status: statusValue !== "" ? (parseFixStatus(statusValue) as DesignReviewIssueRecord["status"]) : "open",
+      severity,
+      status: statusValue !== "" ? parseFixStatus(statusValue) : "open",
       ...(columns.evidence !== undefined && (cells[columns.evidence] ?? "").trim() !== ""
         ? { evidence: (cells[columns.evidence] ?? "").trim() }
         : {}),
@@ -133,7 +145,7 @@ function parseTableFindings(lines: readonly string[], round: number): DesignRevi
 
 /**
  * Parse the review report of ONE round into issue records (both list and
- * table shapes; no ID column ⇒ `CR-<round>-<n>`, 问题 6). Read-only.
+ * table shapes; no ID column ⇒ `CR-<round>-<n>`). Read-only.
  */
 export function parseReviewFindings(reportPath: string, round: number): DesignReviewIssueRecord[] {
   let content: string;
@@ -192,7 +204,7 @@ export function bumpNoProgressGraceUsed(projectRoot: string, docKey: string): vo
 }
 
 /**
- * 229 Phase 4 (B10): ONE sidecar mirror write for the doc's cumulative
+ * ONE sidecar mirror write for the doc's cumulative
  * design-review round count. Called from the coordinator's dispatch-counting
  * point only; failures only audit (`job_state_persist_failed` family).
  */
@@ -223,7 +235,7 @@ export function mirrorSidecarDesignReviewRounds(
  * `meta.reviewLedger`, and freeze ONCE when the open set did not shrink for
  * the granted grace (exhausted).
  *
- * Shuffle contract for callers (问题 9): `frozen: true` ⇒ IMMEDIATE return —
+ * Shuffle contract for callers: `frozen: true` ⇒ IMMEDIATE return —
  * the module already froze (flow state blocked + audit); any routing commit
  * would race the frozen state.
  */
@@ -254,7 +266,7 @@ export async function noteReviewRoundOutcome(input: {
   const activeCtx = readActiveJobContext(config.projectRoot);
   const docKey = activeCtx !== null ? sidecarDocKey(activeCtx.state) : "default";
   const graceUsed = activeCtx !== null ? (readNoProgressGraceUsed(config.projectRoot, docKey) ?? 0) : 0;
-  // 229 (F4 宽限): ONE observation round for the first flat round; the second
+  // ONE observation round for the first flat round; the second
   // consecutive flat round freezes (effective grace 0 after consumption).
   const effectiveGrace = graceUsed >= 1 ? 0 : 1;
 

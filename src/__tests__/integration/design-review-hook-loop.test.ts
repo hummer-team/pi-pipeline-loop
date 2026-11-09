@@ -285,11 +285,18 @@ function writeReport(h: Harness, verdict: "PASS" | "FAIL", issues: string[] = []
     "",
     `**Design Review: ${verdict}**`,
     "",
-    ...(carried.length > 0
+    ...(st.round > 1
       ? [
+          // F2: a round WITH a readable previous report MUST carry the ledger
+          // section even when every carried item was closed (an absent section
+          // is an invalid report under `requireIssueLedger`).
           "## Issue Ledger",
           ...designReviewLedgerRows(
-            carried.map((id) => ({ id, status: verdict === "PASS" ? "fixed" : "open" })),
+            // 229 (F4): each round's plan update addresses the PREVIOUS findings,
+            // so the ledger restates them as `fixed` (a carried item left `open`
+            // forever is exactly the "no progress" debt the loop must stop on);
+            // the round's NEW defects land in `## Issues`.
+            carried.map((id) => ({ id, status: "fixed" })),
           ),
           "",
         ]
@@ -530,7 +537,10 @@ describe("192 issue-6: configured5 / drift-owner-confirm / child→owner / same-
     // round 1: review (rpc1) → FAIL → update (rpc2)
     await h.settle();
     expect(h.rpcCount()).toBe(1);
-    writeReport(h, "FAIL", ["Defect one"]);
+    // 229 F4: every round must SHRINK the outstanding debt (a flat open set
+    // for two consecutive rounds now freezes the loop), so the fixtures start
+    // with five defects and resolve one more each round.
+    writeReport(h, "FAIL", ["Defect one", "Defect two", "Defect three", "Defect four", "Defect five"]);
     await h.settle();
     expect(h.rpcCount()).toBe(2);
     expect(stateOf(h).round).toBe(1);
@@ -543,7 +553,7 @@ describe("192 issue-6: configured5 / drift-owner-confirm / child→owner / same-
     expect(h.rpcCount()).toBe(3);
     expect(stateOf(h).round).toBe(2);
     expect(h.session.getMeta()!.loopCycleCount).toBe(0); // first "design-review" visit
-    writeReport(h, "FAIL", ["Defect two"]);
+    writeReport(h, "FAIL", ["Defect two", "Defect three", "Defect four", "Defect five"]);
     await h.settle();
     expect(h.rpcCount()).toBe(4);
     expect(h.session.getMeta()!.loopCycleCount).toBe(1); // "plan" revisit #1
@@ -557,7 +567,7 @@ describe("192 issue-6: configured5 / drift-owner-confirm / child→owner / same-
     expect(stateOf(h).round).toBe(3);
     expect(h.session.getMeta()!.loopCycleCount).toBe(1); // C1 forward (plan→design-review), not counted
     const reviewOp3 = stateOf(h).operation!.operationId;
-    writeReport(h, "FAIL", ["Defect three"]);
+    writeReport(h, "FAIL", ["Defect three", "Defect four", "Defect five"]);
     await h.settle();
     expect(h.rpcCount()).toBe(6); // NOT frozen: count 2 < configured cap 5
     const metaR3Fail = h.session.getMeta()!;
@@ -607,13 +617,13 @@ describe("192 issue-6: configured5 / drift-owner-confirm / child→owner / same-
     
     // Round 1: FAIL → update
     await h.settle(); // review r1 (rpc1)
-    writeReport(h, "FAIL", ["Defect one"]);
+    writeReport(h, "FAIL", ["Defect one", "Defect two", "Defect three", "Defect four", "Defect five", "Defect six"]);
     await h.settle(); // update r1 (rpc2): design-review → plan, C0 first visit, count=0
     writePlanUpdate(h);
     
     // Round 2: FAIL → update
     await h.settle(); // review r2 (rpc3): plan → design-review, C0 first visit, count=0
-    writeReport(h, "FAIL", ["Defect two"]);
+    writeReport(h, "FAIL", ["Defect two", "Defect three", "Defect four", "Defect five", "Defect six"]);
     await h.settle(); // update r2 (rpc4): design-review → plan, C2 backward, count=1
     writePlanUpdate(h);
     
@@ -621,7 +631,7 @@ describe("192 issue-6: configured5 / drift-owner-confirm / child→owner / same-
     await h.settle(); // review r3 (rpc5): plan → design-review, C1 forward, count=1
     expect(stateOf(h).round).toBe(3);
     expect(h.session.getMeta()!.loopCycleCount).toBe(1); // C1 forward, not counted
-    writeReport(h, "FAIL", ["Defect three"]);
+    writeReport(h, "FAIL", ["Defect three", "Defect four", "Defect five", "Defect six"]);
     await h.settle(); // update r3 (rpc6): design-review → plan, C2 backward, count=2
     writePlanUpdate(h);
     
@@ -629,7 +639,7 @@ describe("192 issue-6: configured5 / drift-owner-confirm / child→owner / same-
     await h.settle(); // review r4 (rpc7): plan → design-review, C1 forward, count=2
     expect(stateOf(h).round).toBe(4);
     expect(h.session.getMeta()!.loopCycleCount).toBe(2); // C1 forward, not counted
-    writeReport(h, "FAIL", ["Defect four"]);
+    writeReport(h, "FAIL", ["Defect four", "Defect five", "Defect six"]);
     await h.settle(); // update r4 (rpc8): design-review → plan, C2 backward, count=3
     writePlanUpdate(h);
     
@@ -637,7 +647,7 @@ describe("192 issue-6: configured5 / drift-owner-confirm / child→owner / same-
     await h.settle(); // review r5 (rpc9): plan → design-review, C1 forward, count=3
     expect(stateOf(h).round).toBe(5);
     expect(h.session.getMeta()!.loopCycleCount).toBe(3); // C1 forward, not counted
-    writeReport(h, "FAIL", ["Defect five"]);
+    writeReport(h, "FAIL", ["Defect five", "Defect six"]);
     await h.settle(); // update r5 (rpc10): design-review → plan, C2 backward, count=4
     writePlanUpdate(h);
     

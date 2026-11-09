@@ -84,16 +84,20 @@ function verdictStopReason(
 }
 
 /**
- * 229 Phase 6 (F8/Phase 7 attribution prep): the DOC-receipt failReason for a
- * blocked 229 STOP uses the exhausted(<reason>) shape — `freeze_unresolvable`
+ * the DOC-receipt failReason for a
+ * blocked STOP uses the exhausted(<reason>) shape — `freeze_unresolvable`
  * stays reserved for REAL unresolvable freezes (never an exhausted loop).
+ *
+ * Only the loop-exhaustion REASON family converts: a `freeze_unresolvable(x)`
+ * wrapper is unwrapped only when `x` itself is an exhaustion reason, so a
+ * genuinely unresolvable freeze keeps its historical attribution verbatim.
  */
 export function exhaustedDocReason(reason: string | undefined): string | undefined {
   if (reason === undefined || reason === "") return undefined;
-  if (reason.startsWith("freeze_unresolvable(") || EXHAUSTION_REASON_SET.has(reason)) {
-    return `exhausted(${reason.startsWith("freeze_unresolvable(") ? reason.slice("freeze_unresolvable(".length, -1) : reason})`;
-  }
-  return undefined;
+  const unwrapped = reason.startsWith("freeze_unresolvable(") && reason.endsWith(")")
+    ? reason.slice("freeze_unresolvable(".length, -1)
+    : reason;
+  return EXHAUSTION_REASON_SET.has(unwrapped) ? `exhausted(${unwrapped})` : undefined;
 }
 
 const EXHAUSTION_REASON_SET = new Set<string>([
@@ -110,7 +114,7 @@ const EXHAUSTION_REASON_SET = new Set<string>([
  * `consecutiveVerifyFailures` counts FAILED ATTEMPTS, never rules: the old
  * `meta.verifyFailures.length` derivation turned "one attempt violated three
  * rules" into three consecutive failures and hard-stopped docs that still had
- * retries (Phase 5 "完成机会"). A failed attempt (meta.verifyAttempts moved
+ * retries (the "completion chance" budget). A failed attempt (meta.verifyAttempts moved
  * since the last look, failures present) adds exactly one; a pass / attempt
  * reset clears the streak.
  */
@@ -203,7 +207,11 @@ export async function finalizeCurrentDoc(
   if (doc) {
     doc.status = opts.outcome === "completed" ? "completed" : "failed";
     if (opts.outcome === "failed") {
-      doc.failReason = opts.reason ?? stopReason ?? "unknown";
+      const rawReason = opts.reason ?? stopReason ?? "unknown";
+      // F8 attribution: a stop caused by an EXHAUSTED loop is receipted as
+      // `exhausted(<reason>)`; `freeze_unresolvable(<reason>)` is reserved for
+      // a genuinely unresolvable freeze (`exhaustedDocReason` decides).
+      doc.failReason = exhaustedDocReason(rawReason) ?? rawReason;
     }
     doc.finalizeKey = key;
     doc.updatedAt = now;

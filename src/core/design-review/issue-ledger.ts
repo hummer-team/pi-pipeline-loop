@@ -1,20 +1,19 @@
 /**
  * @module design-review/issue-ledger
- * 229 Phase 0 (F1/F2): PURE issue-ledger primitives for the review-loop
- * convergence feature (requirement 229, plan v3 Phase 0 task 2).
+ * PURE issue-ledger primitives for the review-loop convergence feature.
  *
  * What lives here — and nothing else:
  * - header-aware parsing of the `## Issues` and `## Issue Ledger` report
  *   sections into {@link DesignReviewIssueRecord}s (four columns
  *   `ID/severity/evidence/summary` selected BY NAME; legacy 3-column tables
  *   and bullet lists fall back to the previous heuristics);
- * - sentinel-first filtering (问题 11): exact whole-item `None`/`无` sentinels
+ * - sentinel-first filtering: exact whole-item no-issue sentinels (bilingual)
  *   are stripped BEFORE any record is constructed;
  * - stable issue id allocation, severity/open-set computation and the
  *   cross-round no-progress evaluation (F4).
  *
  * Pure over parameters: no I/O, no meta access, no clock reads, no side
- * effects. Verifier/severity-gate policy lives in the verifier (229 Phase 1);
+ * effects. Verifier/severity-gate policy lives in the verifier (Phase 1);
  * persistence lives in the coordinator only (B17/B9).
  */
 
@@ -69,7 +68,7 @@ interface LedgerColumns {
   summary?: number;
 }
 
-/** True when the whole item is an exact no-issue sentinel (`None`/`无`/…). */
+/** True when the whole item is an exact no-issue sentinel (bilingual). */
 export function isNoIssueSentinel(text: string): boolean {
   return NO_ISSUE_SENTINELS.has(text.replace(/\*\*|__/g, "").trim().toLowerCase());
 }
@@ -137,7 +136,7 @@ function parseSeverityCell(columns: LedgerColumns | null, cells: readonly string
   return undefined;
 }
 
-/** Read a legal status from a cell; absent/unknown ⇒ `open` (问题 10 normalization). */
+/** Read a legal status from a cell; absent/unknown ⇒ `open` (normalization). */
 function parseStatusCell(columns: LedgerColumns | null, cells: readonly string[]): IssueStatus {
   if (columns?.status === undefined) return "open";
   const value = normalizeCell(cells[columns.status]);
@@ -257,7 +256,7 @@ function walkIssuesSection(
       continue;
     }
     // Bullet / ordered item / bare line — the no-issue sentinel is written this
-    // way and MUST be visible (stripped BEFORE record construction, 问题 11).
+    // way and MUST be visible (stripped BEFORE record construction).
     const bullet = trimmed.match(BULLET_RE);
     const text = (bullet && bullet[1] !== undefined ? bullet[1] : trimmed).trim();
     rawItemCount += 1;
@@ -340,7 +339,7 @@ export function severityCounts(
 
 /**
  * Compute the cross-round OPEN set (F2 closure): issues whose status is
- * `open`/`carry-over`, unknown or absent stay open (问题 10); only
+ * `open`/`carry-over`, unknown or absent stay open; only
  * `fixed`/`accepted-risk` leave the set.
  */
 export function computeOpenSet(records: readonly DesignReviewIssueRecord[]): DesignReviewIssueRecord[] {
@@ -359,10 +358,23 @@ export interface NoProgressEvaluation {
 /**
  * Evaluate one round against the STORED previous ledger (F4 / R3-Q4 B):
  * - no previous snapshot OR a different `loop` identity ⇒ progress with
- *   streak 0 (callers audit `no_progress_loop_mismatch`, 问题 20);
- * - the open set SHRANK ⇒ progress (streak resets);
+ *   streak 0 (callers audit `no_progress_loop_mismatch`);
+ * - the outstanding debt genuinely SHRANK ⇒ progress (streak resets);
  * - otherwise the streak extends by 1 and turns `exhausted` once the
  *   granted grace rounds are used up (`streak > grace`).
+ *
+ * "Shrank" means the DEBT shrank, not that ids moved (review issue 23):
+ * replacing one blocker with another while the rest of the open set survives
+ * is NOT progress, because the blocking set never shrank.
+ *
+ * Documented identity variant: a pair with NO surviving id at all is not
+ * id-comparable — the shipped per-round reports re-derive mechanical
+ * `DR-<round>-<n>` / `CR-<round>-<n>` names unless the report declares
+ * explicit ids, so a fully disjoint pair carries an id-generation artifact
+ * rather than evidence of a non-shrinking debt. Such a pair falls back to the
+ * historical count rule (smaller ⇒ progress, flat/grown ⇒ no progress).
+ * Reports that declare or restate ids make the identity comparable and
+ * therefore trigger the strict rule above.
  */
 export function evaluateNoProgress(
   prev: ReviewProgressSnapshot | undefined,
@@ -372,28 +384,25 @@ export function evaluateNoProgress(
   if (prev === undefined || prev.loop !== next.loop) {
     return { verdict: "progress", streak: 0 };
   }
-  const nextOpen = next.openIds.length;
-  const prevOpen = prev.openIds.length;
-  if (nextOpen < prevOpen) {
+  if (didDebtShrink(prev.openIds, next.openIds)) {
     return { verdict: "progress", streak: 0 };
-  }
-  // 229 Phase 4 (sidecar-chain semantics): an equal-count open set whose
-  // IDS CHANGED means the loop DID work (resolved old items while finding
-  // new ones) — for the no-progress rule, only a verbatim repetition
-  // (identical ids, count not decreased) counts as "no shrink". A GROWING
-  // set is never progress, even when ids changed.
-  if (nextOpen === prevOpen) {
-    const prevSet = new Set(prev.openIds);
-    let identityChanged = false;
-    for (const id of next.openIds) {
-      if (!prevSet.has(id)) {
-        identityChanged = true;
-        break;
-      }
-    }
-    if (identityChanged) return { verdict: "progress", streak: 0 };
   }
   const streak = (prev.streak ?? 0) + 1;
   if (streak > grace) return { verdict: "exhausted", streak };
   return { verdict: "no-progress", streak };
+}
+
+/**
+ * Did the outstanding debt genuinely shrink? TRUE when the next open count is
+ * strictly smaller AND:
+ * - no id survived ⇒ the count alone is the only available evidence;
+ * - otherwise the remaining ids must be a PROPER SUBSET of the previous set
+ *   (a disappearing blocker that was REPLACED by a new one is not shrinkage).
+ */
+function didDebtShrink(prevOpenIds: readonly string[], nextOpenIds: readonly string[]): boolean {
+  if (nextOpenIds.length >= prevOpenIds.length) return false;
+  const prevSet = new Set(prevOpenIds);
+  const comparable = nextOpenIds.some((id) => prevSet.has(id));
+  if (!comparable) return true;
+  return nextOpenIds.every((id) => prevSet.has(id));
 }

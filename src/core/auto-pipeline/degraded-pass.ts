@@ -1,6 +1,6 @@
 /**
  * @module auto-pipeline/degraded-pass
- * 229 Phase 6 (F6/B1): degraded-pass record construction and binding check.
+ * degraded-pass record construction and binding check.
  *
  * Facts (contract):
  * - `completion` scope records MAY substitute completion-gate evidence ①
@@ -14,6 +14,9 @@
  */
 
 import type { DegradedPassRecord, SessionMeta } from "../../types";
+import { readActiveJobContext } from "./config-overlay";
+import { auditAutoDiagnostic } from "./diagnostics";
+import { writeJobState } from "./job-state";
 
 /** Is THIS record eligible to substitute completion-gate evidence ①? */
 export function isDegradedPassBound(
@@ -27,7 +30,13 @@ export function isDegradedPassBound(
   return blockers === 0;
 }
 
-/** True when THIS meta already carries the same degradation stamp. */
+/**
+ * True when THIS meta already carries the same degradation stamp.
+ *
+ * The key is (pipelineId, round, reason) — NEVER `at`: the candidate is built
+ * with `Date.now()`, so an `at`-inclusive key could never match a re-stamp and
+ * a repeat advance would duplicate the record.
+ */
 export function isDegradedPassDuplicate(
   existing: DegradedPassRecord | undefined,
   candidate: DegradedPassRecord,
@@ -37,12 +46,41 @@ export function isDegradedPassDuplicate(
     existing.pipelineId === candidate.pipelineId
     && existing.round === candidate.round
     && existing.reason === candidate.reason
-    && existing.at === candidate.at
   );
 }
 
 /**
- * 229 Phase 5/6 (B5): mechanically build the degraded-pass record for the
+ * Doc-progress MIRROR of a persisted degraded-pass record (Phase 6 task 4):
+ * `AutoJobDocProgress.degradedPass` is read-only display data — it never
+ * participates in any judgement (the gate reads `meta.degradedPass` only).
+ * Failures stay diagnostics-only, like every other sidecar mirror write.
+ */
+export function mirrorDegradedPassToJobDoc(
+  projectRoot: string,
+  record: DegradedPassRecord,
+): void {
+  const active = readActiveJobContext(projectRoot);
+  if (active === null) return;
+  const doc = active.state.docs[active.state.docIndex];
+  if (doc === undefined) return;
+  const severityCounts: Record<string, number> = {};
+  for (const [severity, count] of Object.entries(record.severityCounts)) {
+    if (count !== undefined) severityCounts[severity] = count;
+  }
+  doc.degradedPass = { reason: record.reason, round: record.round, severityCounts };
+  doc.updatedAt = Date.now();
+  active.state.updatedAt = doc.updatedAt;
+  void writeJobState(projectRoot, active.state).catch((err: unknown) => {
+    auditAutoDiagnostic("job_state_persist_failed", "Degraded-pass mirror write failed.", {
+      jobId: active.jobId,
+      reason: record.reason,
+      error: String(err),
+    });
+  });
+}
+
+/**
+ * mechanically build the degraded-pass record for the
  * review/fix loop's completion exit from meta state.
  *
  * `undefined` reasons (fail-closed, audit upstream):
@@ -51,9 +89,11 @@ export function isDegradedPassDuplicate(
  *   (`Blocker + High > 0`) — the caller DEGRADES the target to
  *   `awaiting_human` instead.
  *
- * Open items become `accepted-risk` with their ledger-recorded severity
- * (ids without a declared severity are treated NON-blocking, consistent
- * with the review loop's own severity gate).
+ * Open items become `accepted-risk` with their ledger-recorded severity. An id
+ * WITHOUT a declared severity never fabricates one (a `Medium` fallback would
+ * understate the real distribution and desynchronise `openIssues` from
+ * `severityCounts`): it is treated as non-blocking, exactly like the review
+ * loop's own severity gate, and therefore does not enter the record.
  */
 export function buildDegradedPassFromReviewLedger(
   meta: SessionMeta,
@@ -64,14 +104,12 @@ export function buildDegradedPassFromReviewLedger(
   if (ledger === undefined || ledger.loop !== "reviewFix") return undefined;
   const blockers = (ledger.severityCounts["Blocker"] ?? 0) + (ledger.severityCounts["High"] ?? 0);
   if (blockers > 0) return undefined;
-  const openIssues: DegradedPassRecord["openIssues"] = ledger.openIds.map((id) => {
+  const openIssues: DegradedPassRecord["openIssues"] = [];
+  for (const id of ledger.openIds) {
     const severity = ledger.severityById?.[id];
-    return {
-      id,
-      ...(severity !== undefined ? { severity } : { severity: "Medium" as const }),
-      status: "accepted-risk" as const,
-    };
-  });
+    if (severity === undefined) continue;
+    openIssues.push({ id, severity, status: "accepted-risk" });
+  }
   const at = Date.now();
   return {
     scope: "completion",

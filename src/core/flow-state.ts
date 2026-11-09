@@ -28,6 +28,9 @@ import { designReviewAuthorisationGate } from "./design-review/authorization";
 // 219 Phase 3 (G3/B3): auto-pipeline authorisation channel (job = authoriser).
 import { autoPipelineAuthOpts, isAutoJobActive } from "./auto-pipeline/config-overlay";
 import { runFreezeAutopilot } from "./auto-pipeline/freeze-autopilot";
+// F7 attribution: the budget-exhaustion audit resolves the loop identity with
+// the SAME loop-first helper the routing uses (type-only module ⇒ no cycle).
+import { LOOP_BUDGET_REASONS, resolveLoopOwnership } from "./auto-pipeline/loop-exhaustion";
 import { auditAutoDecision } from "./auto-pipeline/auto-audit";
 import { guardGenericFlowDecision } from "./design-review/flow-decision-guard";
 import { strictCommitMeta, expectedFromCurrent } from "./session-state";
@@ -199,9 +202,8 @@ const DECISION_LABELS: Record<PipelineDecision, string> = {
   choose_stage: "Choose stage…",
   set_budget: "Set round budget",
   rewind_last_round: "Rewind last_round",
-  // 229 Phase 0 (declaration only): labels exist so `Record<PipelineDecision, string>`
-  // stays exhaustive when the union grew. `advance` is NOT rendered in any menu
-  // until 229 Phase 5 wires the exhaustion branches (`buildDecisionMenu`).
+  // Both exhaustion decisions are rendered by the exhaustion branches of
+  // `buildDecisionMenu` (see `EXHAUSTION_MENU_REASONS`).
   advance: "Degraded pass (advance)",
   reset_loop_budget: "Reset loop budget (raises the cap)",
 };
@@ -257,6 +259,18 @@ function isDecisionPending(meta: SessionMeta): boolean {
   return flowState === "blocked" || meta.currentStage === "awaiting_human";
 }
 
+/**
+ * Blocked reasons whose generic menu carries the loop-exhaustion exits.
+ * `review_loop_budget_exhausted` is a production reason (`EXHAUSTION_REASONS` /
+ * finalize attribution) and MUST offer them too.
+ */
+const EXHAUSTION_MENU_REASONS: ReadonlySet<string> = new Set([
+  "no_progress_detected",
+  "design_review_budget_exhausted",
+  "review_loop_budget_exhausted",
+  "max_loop_cycles",
+]);
+
 // ─── buildDecisionMenu ──────────────────────────────────────────────────────
 
 /**
@@ -284,7 +298,7 @@ export function buildDecisionMenu(
 
   if (fs === "blocked" || meta.currentStage === "awaiting_human") {
     // Phase 6 (195): max_loop_cycles gets a specialized 4-item menu
-    // 203_Bug Phase 1: 弹门禁放开 — set_budget / rewind / resume are always
+    // 203_Bug Phase 1: menu gating relaxed — set_budget / rewind / resume are always
     // offered (the one-shot "extension/rewind already used" guards were
     // removed; only the structural rework-loop-gate condition remains).
     if (blockedReason === "max_loop_cycles") {
@@ -299,10 +313,14 @@ export function buildDecisionMenu(
         items.push(DECISION_LABELS.set_budget);
       }
 
-      // 229 Phase 5 (F5/R4-Q4 A): the exhaustion menu grows the degraded-pass
-      // advance (manual track's "降级放行") and the reset door (R5-Q2 A).
+      // the exhaustion menu grows the degraded-pass
+      // advance (the manual track's degraded release) and the reset door (R5-Q2 A).
+      // `reset_loop_budget` collects a NUMBER just like
+      // `set_budget`, so a host without `ui.input` must not be offered it.
       items.push(DECISION_LABELS.advance);
-      items.push(DECISION_LABELS.reset_loop_budget);
+      if (capabilities.input) {
+        items.push(DECISION_LABELS.reset_loop_budget);
+      }
 
       // rewind_last_round offered whenever the rework gate can be derived
       const rewindGate = deriveReworkLoopGate(meta, config);
@@ -329,11 +347,15 @@ export function buildDecisionMenu(
       DECISION_LABELS.abort,
       DECISION_LABELS.choose_stage,
     ];
-    // 229 Phase 5 (F5): the exhaustible loop reasons offer the degraded-pass
-    // advance + the budget reset door (R4-Q4 A / R5-Q2 A).
-    if (blockedReason === "no_progress_detected" || blockedReason === "design_review_budget_exhausted") {
+    // the exhaustible loop reasons offer the degraded-pass
+    // advance + the budget reset door (R4-Q4 A / R5-Q2 A). the
+    // `review_loop_budget_exhausted` family is a loop reason too, and the reset
+    // door needs `ui.input` exactly like `set_budget`.
+    if (EXHAUSTION_MENU_REASONS.has(blockedReason ?? "")) {
       generic.push(DECISION_LABELS.advance);
-      generic.push(DECISION_LABELS.reset_loop_budget);
+      if (capabilities.input) {
+        generic.push(DECISION_LABELS.reset_loop_budget);
+      }
     }
     return generic;
   }
@@ -373,7 +395,7 @@ export function validateBudgetValue(
 }
 
 /**
- * 229 (问题 1/16): numeric legality for `reset_loop_budget` — SEPARATE from
+ * numeric legality for `reset_loop_budget` — SEPARATE from
  * `validateBudgetValue` because its baseline is the ACTUAL round access
  * count (`designReviewRounds`), never the loop cycle count. Only RAISES the
  * cap: the current count is never refunded.
@@ -389,6 +411,17 @@ export function validateDesignReviewBudgetValue(
     return { ok: false, message: `Cannot reset loop budget: value (${value}) must be greater than the current designReviewRounds (${currentRounds}).` };
   }
   return { ok: true };
+}
+
+/**
+ * TRUE when the review/fix loop's stored ledger still carries a Blocker/High
+ * open item. Such a set can NEVER become a `completion` degraded
+ * pass (B5), so the `advance` exit degrades its target to `awaiting_human`.
+ */
+function hasBlockingReviewDebt(meta: SessionMeta): boolean {
+  const counts = meta.reviewLedger?.severityCounts;
+  if (counts === undefined) return false;
+  return (counts["Blocker"] ?? 0) + (counts["High"] ?? 0) > 0;
 }
 
 // ─── executeDecision ────────────────────────────────────────────────────────
@@ -646,34 +679,13 @@ export async function executeDecision(
       await invalidateDesignReviewAuthorization(ctx, "decision_skip");
 
       const prevStage = meta.currentStage;
-
-      const summariesPatch = meta.summaries[prevStage]
-        ? {
-            summaries: {
-              ...meta.summaries,
-              [prevStage]: { ...meta.summaries[prevStage], status: "skipped" as const },
-            },
-          }
-        : {};
-
-      ctx.session.updateMeta({
-        previousStage: prevStage,
-        currentStage: toStage,
-        stageStartTime: Date.now(),
-        flowState: "running",
-        blockedReason: undefined,
-        loopCount: 0,
-        currentStepIndex: 0,
-        ...stageMigrationResetCounters(),
-        verifyFailures: [],
-        verifyConfigError: undefined,
-        violations: [],
-        precheckBlocked: undefined, // 189 Bug 3: clear hard-stop flag on decision
-        transientRetryCount: undefined, // 189 Phase 2: clear retry counter on decision
-        // Phase 1 (180): new stage visit — clear any stale confirm-gate deferral stamp.
-        confirmGateDeferredAt: undefined,
-        ...summariesPatch,
-      });
+      // the forward migration patch is built by the
+      // SAME shared helper the `advance` exit and the degraded release use —
+      // a local copy would drift away from the canonical field list.
+      const { buildForwardStagePatch: buildSkipPatch } = await import("./stage-migration");
+      ctx.session.updateMeta(
+        buildSkipPatch({ meta, prevStage, toStage }),
+      );
 
       await safeWriteAuditLog("pipeline_decision", {
         pipelineId: meta.pipelineId,
@@ -781,7 +793,7 @@ export async function executeDecision(
       const oldPipelineId = meta.pipelineId;
 
       // 203_Bug Phase 1: single-source new-period reset checklist replaces the
-      // handwritten clears — 补齐 loop-budget counters (loopCycleCount /
+      // handwritten clears — the loop-budget counters (loopCycleCount /
       // loopBudgetExtensionCount / loopRewindCount / loopBudgetWarned / maxLoopCycles
       // → config default), dismiss/confirm counters, escalation + wake one-shots,
       // lastVerifyResult, designReview authorization. No cross-period residue.
@@ -1151,7 +1163,7 @@ export async function executeDecision(
     }
 
     case "reset_loop_budget": {
-      // 229 Phase 5 (问题 1/16 / R5-Q2 A): the re-entry-ban reset door. ONLY
+      // the re-entry-ban reset door. ONLY
       // RAISES the cap — the current count is never refunded (monotonic; the
       // next dispatch is not immediately exhausted) — and clears the loop's
       // `exhaustedLoops` entry so re-entry becomes possible.
@@ -1163,9 +1175,16 @@ export async function executeDecision(
         return { success: false, message: "Cannot reset loop budget: budgetValue is required." };
       }
       const reason = meta.blockedReason ?? "";
-      const loop: "designReview" | "reviewFix" = reason === "design_review_budget_exhausted" || reason === "no_progress_detected"
-        ? "designReview"
-        : "reviewFix";
+      // resolve the loop from its OWN identity — the
+      // shared loop-first predicate (`meta.reviewLedger` / the current stage,
+      // then the design-review domain). Deriving it from the reason alone
+      // would file a review/fix no-progress freeze under designReview: the
+      // WRONG counter would be raised and the WRONG `exhaustedLoops` entry
+      // cleared, leaving the review/fix loop re-entry-banned forever.
+      const { resolveLoopOwnership } = await import("./auto-pipeline/loop-exhaustion");
+      const routed = resolveLoopOwnership(meta, reason);
+      const loop: "designReview" | "reviewFix" = routed
+        ?? (meta.reviewLedger?.loop === "reviewFix" ? "reviewFix" : "designReview");
       if (loop === "designReview") {
         const currentRounds = meta.autoJob?.designReviewRounds ?? 0;
         const verdict = validateDesignReviewBudgetValue(budgetValue, currentRounds);
@@ -1268,7 +1287,7 @@ export async function executeDecision(
     }
 
     case "advance": {
-      // 229 Phase 5 (B2 path B): the review/fix LOOP exit — the degraded-pass
+      // the review/fix LOOP exit — the degraded-pass
       // release from review into completing the pipeline. `skip` semantics
       // stay untouched; this branch own-count the release.
       if (!isFrozen(meta)) {
@@ -1279,7 +1298,7 @@ export async function executeDecision(
       const { readActiveJobContext } = await import("./auto-pipeline/config-overlay");
       const { docsDirsOf } = await import("../docs-paths");
       const { buildForwardStagePatch } = await import("./stage-migration");
-      const { buildDegradedPassFromReviewLedger } = await import("./auto-pipeline/degraded-pass");
+      const { buildDegradedPassFromReviewLedger, isDegradedPassDuplicate, mirrorDegradedPassToJobDoc } = await import("./auto-pipeline/degraded-pass");
       const { EXHAUSTION_REASON_TO_DEGRADED_REASON } = await import("./auto-pipeline/loop-exhaustion");
 
       const fromStage = meta.currentStage;
@@ -1296,11 +1315,13 @@ export async function executeDecision(
         return { success: false, message: "Cannot advance: the loop-exhaustion job defaults are unavailable." };
       }
       const reason = meta.blockedReason ?? "";
-      const loop = reason === "design_review_budget_exhausted"
-        ? (fromStage === "design-review" ? "designReview" : null)
-        : (fromStage === "review" || fromStage === "fix" ? "reviewFix" : null);
+      // loop identity is resolved by the SHARED
+      // loop-first routing (never a local stage guess) so design-review and
+      // review/fix can never swap their ledgers or exits.
+      const { resolveExhaustionLoop } = await import("./auto-pipeline/loop-exhaustion");
+      const loop = resolveExhaustionLoop({ meta, job, reason, config });
       if (loop === null) {
-        return { success: false, message: `Cannot advance: no exhausted loop is armed at "${fromStage}".` };
+        return { success: false, message: `Cannot advance: no exhausted loop is armed at "${fromStage}" (reason "${reason}").` };
       }
       const configured = loop === "designReview" ? job.onExhausted?.designReview : job.onExhausted?.reviewFix;
       if (configured === "stop") {
@@ -1382,7 +1403,48 @@ export async function executeDecision(
       // completed exit: build the candidate WITHOUT touching state, gate it
       // (B13), and commit ONCE after the gate allows.
       const degradedReason = EXHAUSTION_REASON_TO_DEGRADED_REASON[reason] ?? reason;
-      const degradedPassCandidate = buildDegradedPassFromReviewLedger(meta, degradedReason, activeJob?.jobId);
+      const builtCandidate = buildDegradedPassFromReviewLedger(meta, degradedReason, activeJob?.jobId);
+      // Phase 6 task 2: a repeat advance for the SAME (pipelineId, round, reason)
+      // never re-stamps the record — the duplicate is audited and the existing
+      // record is reused verbatim.
+      const isDuplicate = builtCandidate !== undefined && isDegradedPassDuplicate(meta.degradedPass, builtCandidate);
+      if (isDuplicate) {
+        await safeWriteAuditLog("degraded_pass_duplicate", {
+          pipelineId: meta.pipelineId,
+          stage: fromStage,
+          reason: degradedReason,
+          round: String(meta.degradedPass?.round ?? 0),
+        }, "info");
+      }
+      const degradedPassCandidate = isDuplicate ? meta.degradedPass : builtCandidate;
+      // a carry-over set that STILL holds a
+      // Blocker/High may not be accepted as a `completion` degraded pass —
+      // the target DEGRADES to `awaiting_human` and the refusal is audited.
+      if (degradedPassCandidate === undefined && hasBlockingReviewDebt(meta)) {
+        await safeWriteAuditLog("degraded_pass_blocked_by_severity", {
+          pipelineId: meta.pipelineId,
+          stage: fromStage,
+          reason,
+          openIds: (meta.reviewLedger?.openIds ?? []).join(","),
+          severityCounts: JSON.stringify(meta.reviewLedger?.severityCounts ?? {}),
+        }, "warn");
+        await safeWriteAuditLog("loop_exhausted_await_human", {
+          pipelineId: meta.pipelineId,
+          stage: fromStage,
+          decision: "advance",
+          reason,
+          degradedBy: "blocking_severity",
+        }, "warn");
+        ctx.session.updateMeta({
+          ...buildForwardStagePatch({ meta, prevStage: fromStage, toStage: "awaiting_human" }),
+        });
+        return {
+          success: true,
+          message:
+            `Advanced from "${fromStage}" to "awaiting_human" — the carried open set still holds Blocker/High ` +
+            `items (degraded pass blocked by severity).`,
+        };
+      }
       const candidate: SessionMeta = {
         ...meta,
         ...buildForwardStagePatch({ meta, prevStage: fromStage, toStage: "completed" as PipelineStage }),
@@ -1416,14 +1478,18 @@ export async function executeDecision(
         });
       }
       if (degradedPassCandidate !== undefined) {
-        await safeWriteAuditLog("degraded_pass_written", {
-          pipelineId: meta.pipelineId,
-          stage: fromStage,
-          reason,
-          scope: degradedPassCandidate.scope,
-        });
+        if (!isDuplicate) {
+          await safeWriteAuditLog("degraded_pass_written", {
+            pipelineId: meta.pipelineId,
+            stage: fromStage,
+            reason,
+            scope: degradedPassCandidate.scope,
+          });
+          // Phase 6 task 4: the doc progress mirror (display only).
+          mirrorDegradedPassToJobDoc(config.projectRoot, degradedPassCandidate);
+        }
       }
-      // skip's terminal semantics preserved (B12/问题 3): compact + invalidate.
+      // skip's terminal semantics preserved (B12): compact + invalidate.
       if (ctx._ctx) {
         await maybeCompactOnPipelineCompleted(
           { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx },
@@ -2654,9 +2720,38 @@ function writePipelineBlockedAudit(
 }
 
 /**
+ * F7 audit table: the BUDGET-exhaustion record (loop / round / maxRounds /
+ * reason) is emitted ONCE at the freeze boundary. `no_progress_detected` is an
+ * observation-based freeze, not a budget one, and keeps its own audit.
+ */
+async function writeLoopBudgetExhaustedAudit(
+  meta: SessionMeta,
+  reason: string,
+  config: PipelineConfig,
+): Promise<void> {
+  if (!LOOP_BUDGET_REASONS.has(reason)) return;
+  const loop = resolveLoopOwnership(meta, reason);
+  const round = loop === "designReview"
+    ? (meta.designReview?.round ?? 0)
+    : (meta.reviewRound?.index ?? 0);
+  const maxRounds = loop === "designReview"
+    ? (meta.autoJob?.designReviewMaxRounds ?? 0)
+    : effectiveMax(meta, config);
+  await safeWriteAuditLog("loop_budget_exhausted", {
+    pipelineId: meta.pipelineId,
+    stage: meta.currentStage,
+    loop: loop ?? "unknown",
+    round: String(round),
+    maxRounds: String(maxRounds),
+    reason,
+    loopCycleCount: String(meta.loopCycleCount ?? 0),
+  }, "warn");
+}
+
+/**
  * 210 Phase 1 (requirement 5.3 audit): visibility fields for the
  * decision-provider chain. Written ONLY when the policy is enabled —
- * unconfigured projects keep the baseline audit shape verbatim (约束 4).
+ * unconfigured projects keep the baseline audit shape verbatim (constraint 4).
  */
 function buildDecisionPolicyAuditFields(config: PipelineConfig): Record<string, string> {
   if (!isDecisionPolicyEnabled(config)) return {};
@@ -2711,7 +2806,7 @@ export function resolveDecisionReason(meta: SessionMeta): string {
 }
 
 /**
- * 210 Phase 1:单一 decision-provider chain entry — human first, then policy,
+ * 210 Phase 1: the SINGLE decision-provider chain entry — human first, then policy,
  * then abort (requirement 5.3, I2).
  *
  * - Policy disabled (`B-1` gate): verbatim passthrough to `ensureDecisionMenu`
@@ -2948,6 +3043,9 @@ export async function freezeAndPrompt(
 
   // Audit: pipeline blocked (warn level)
   await writePipelineBlockedAudit(meta, reason, config, hostRole);
+  // F7: the budget-exhaustion record (loop / round / maxRounds / reason) —
+  // emitted once per freeze, next to the blocked record it explains.
+  await writeLoopBudgetExhaustedAudit(frozenMeta, reason, config);
 
   // Phase 4 (189): Notify regardless of hostRole — child TUI shows the block,
   // owner TUI shows both notify and menu (notify complements the menu).

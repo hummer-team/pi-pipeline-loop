@@ -523,7 +523,8 @@ sub-sections are exact; the receipt document carries EXACTLY ONE such section):
 
 ### Changes Made
 
-- <where in the plan each fixed issue was addressed, citing the plan Phase (e.g. "Phase 3"), for the next review round>
+- <issueId>: <where in the plan the issue was addressed, citing the plan Phase (e.g. "Phase 3")>
+...
 \`\`\`
 
 **Constraints**

@@ -509,20 +509,18 @@ async function computeDesignReviewDomainOutcome(
     // gate over the SAME snapshot; the decision is handed to consumers
     // through this outcome so the coordinator never re-reads the report.
     const reviewConfirmMode = resolveDesignReviewConfirmMode(meta, config);
-    // 229 Phase 2 (F2/B9): the previous round's OPEN findings are read ONCE
-    // here (read-only) and drive BOTH:
-    //  - the closure gate (requireIssueLedger + previousOpenIssues), and
-    //  - the per-round directive (coordinator renders it at dispatch).
-    // NO meta is written in this path (the coordinator owns persistence).
-    const previousFindings = resolvePreviousOpenFindings({
+    // a readable PREVIOUS round is the ONLY condition for
+    // the ledger requirement — a round whose predecessor left no open items
+    // still owes the (empty) restatement ledger. Only a first round / an
+    // unreadable predecessor skips the closure, and that skip is audited.
+    // Read ONCE (B9): the closure gate consumes the open projection, the
+    // coordinator renders the same records into the per-round directive.
+    const previous = resolvePreviousOpenFindings({
       planDoc: ctx.planDoc,
       round: ctx.round,
     });
-    const previousOpenIssues = previousFindings !== null
-      ? computeOpenSet(previousFindings.records)
-      : undefined;
-    if (previousFindings === null) {
-      // 229 Phase 2: first round OR no readable previous report ⇒ the ledger
+    if (previous === null) {
+      // first round OR no readable previous report ⇒ the ledger
       // closure is skipped (audited once per verification, never fail-closed).
       await safeWriteAuditLog("issue_ledger_closure_skipped", {
         pipelineId: ctx.pipelineId,
@@ -531,8 +529,8 @@ async function computeDesignReviewDomainOutcome(
         reason: ctx.round <= 1 ? "first_round" : "previous_report_unreadable",
       }, "info");
     }
-    const hasClosureDebt = (previousOpenIssues?.length ?? 0) > 0;
-    void previousFindings;
+    const requireIssueLedger = previous !== null;
+    const carryOver = previous !== null ? computeOpenSet(previous.records) : [];
     const v = verifyDesignReviewReportSnapshot(content, {
       pipelineId: ctx.pipelineId,
       planDoc: ctx.planDoc,
@@ -543,10 +541,11 @@ async function computeDesignReviewDomainOutcome(
       verdictPatterns: anchors.anchors.verdict?.patterns,
       issueHeadingPattern: anchors.anchors.issueHeading?.patterns[0],
       smartDecisionMode: reviewConfirmMode === "smart",
-      // 229 Phase 2: a ledger requirement exists ONLY when the previous round
-      // actually left open items to restate (an empty carry-over set is not a debt).
-      requireIssueLedger: hasClosureDebt,
-      ...(hasClosureDebt && previousOpenIssues !== undefined ? { previousOpenIssues } : {}),
+      // `requireIssueLedger = previous !== null`; the
+      // closure SET is what the open filter decides (an empty set is a legal
+      // "no outstanding debt" baseline, not an absent one).
+      requireIssueLedger,
+      ...(carryOver.length > 0 ? { previousOpenIssues: carryOver } : {}),
     });
     if (v.verdict === "invalid") {
       return {
@@ -577,7 +576,7 @@ async function computeDesignReviewDomainOutcome(
   // binding is interpreted, so "missing receipt" can never degrade into
   // "back-fill the receipt from the plan body".
   const set = capture ?? (await captureDesignReviewSnapshots(ctx));
-  // 229 Phase 3 (B14): the preparation-time section-hash baseline drives the
+  // the preparation-time section-hash baseline drives the
   // mechanical scope check; absent (legacy update) ⇒ aggregate check only.
   const evaluated = evaluateUpdateSnapshots(ctx, set, {
     baselineSectionHashes: meta.designReview?.updateBaselineSectionHashes,
@@ -593,27 +592,31 @@ async function computeDesignReviewDomainOutcome(
   // attribution (snapshot hash vs receipt reportHash + declared **operation**
   // vs the consumed review identity) is enforced inside the evaluator.
   const verdict = validateDesignReviewUpdate(evaluated.input);
-  // 229 Phase 3 (F3): scope audits (auto-verifier is the ONLY writer here —
-  // it never touches meta; B9/B17).
-  if (verdict.status === "invalid" && verdict.scope?.legacy === true) {
+  // A `paused` verdict carries no scope evidence (no mechanical check ran), so
+  // every consumer reads the scope through this one narrowing.
+  const scope = verdict.status === "paused" ? undefined : verdict.scope;
+  // a LEGACY receipt aggregates instead of binding
+  // per issue — that mode is audited ONCE regardless of the verdict outcome
+  // (ready and invalid both consumed a legacy receipt).
+  if (scope?.legacy === true) {
     await safeWriteAuditLog("update_receipt_legacy_binding", {
       pipelineId: ctx.pipelineId,
       stage: "design-review",
       round: String(ctx.round),
+      status: verdict.status,
       reason: "baseline_section_hashes_missing",
     }, "info");
   }
-  if (verdict.status === "invalid" && (verdict.scope?.undeclared.length ?? 0) > 0) {
+  if ((scope?.undeclared.length ?? 0) > 0) {
     await safeWriteAuditLog("scope_violation", {
       pipelineId: ctx.pipelineId,
       stage: "design-review",
       round: String(ctx.round),
-      declaredPhases: verdict.scope !== undefined ? verdict.scope.declared.phases.map(String).join(",") : "",
-      changedSections: verdict.scope !== undefined ? verdict.scope.changed.join(",") : "",
-      undeclared: verdict.scope !== undefined ? verdict.scope.undeclared.join(",") : "",
+      declaredPhases: scope !== undefined ? scope.declared.phases.map(String).join(",") : "",
+      changedSections: scope !== undefined ? scope.changed.join(",") : "",
+      undeclared: scope !== undefined ? scope.undeclared.join(",") : "",
     });
   }
-  void verdict;
   if (verdict.status === "invalid") {
     return {
       kind: "invalid",
@@ -637,7 +640,7 @@ async function computeDesignReviewDomainOutcome(
     // 194 C2: the plan hash alone no longer describes the update's output —
     // the standalone receipt hash rides along for pre-advance revalidation.
     ...(verdict.receiptHash !== undefined ? { receiptHash: verdict.receiptHash } : {}),
-    // 229 Phase 3 (B14): the declared set for the coordinator's
+    // the declared set for the coordinator's
     // `lastDeclaredScope` persistence (the next review round's directive).
     ...(verdict.scope !== undefined ? { declaredScope: { phases: verdict.scope.declared.phases, sections: verdict.scope.declared.sections } } : {}),
   };
@@ -1125,7 +1128,7 @@ function hasMarkerAtLineStart(content: string, marker: string): boolean {
  * inside a fenced code block.
  *
  * This fixes the 88_Feat accident where inline backtick references to the
- * marker (e.g., `` `## 模型确认` ``) triggered a false positive via
+ * marker (e.g., the shipped model-confirmation marker) triggered a false positive via
  * `content.includes(marker)`.
  *
  * Returns false (treated as "not yet complete") when:

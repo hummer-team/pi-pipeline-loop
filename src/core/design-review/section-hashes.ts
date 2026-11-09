@@ -1,13 +1,13 @@
 /**
  * @module design-review/section-hashes
- * 229 Phase 3 (F3/B15): PURE section-hash baseline + diff for the mechanical
+ * PURE section-hash baseline + diff for the mechanical
  * declared-scope check.
  *
  * Coverage (B15): EVERY top-level `## ` section is hashed with the SAME
  * policy — Phase sections are keyed `phase:<n>` (any heading whose text
- * matches `phase <digits>` / `阶段 <digits>`), every other section is keyed
+ * matches `phase <digits>` / the localized spelling), every other section is keyed
  * `section:<title>` (duplicates get `#2`, `#3`… preserving first-seen order).
- * Non-Phase sections (`## 验收`, `## 风险`, `## 用户确认`…) are FIRST-CLASS:
+ * Non-Phase sections (acceptance, risks, user confirmation, …) are FIRST-CLASS:
  * out-of-scope edits cannot hide in them.
  *
  * Pure over strings: no I/O, no meta, no clock.

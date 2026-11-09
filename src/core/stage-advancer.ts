@@ -25,7 +25,7 @@ import * as fsPathSync from "node:fs";
 import type { PipelineConfig, Tool, SessionMeta, PipelineStage, ExecFn, ConfirmMode, StageConfig } from "../types";
 // 225 Phase 3: review executor liveness (shared with the settle-side exit gate).
 import { isReviewExecutorLive } from "./review-exit-gate";
-// 229 Phase 4 (F4): review/fix-loop no-progress detection + freeze signaling.
+// review/fix-loop no-progress detection + freeze signaling.
 import { noteReviewRoundOutcome } from "./auto-pipeline/review-no-progress";
 import { createPipelineUI, syncStageStatusBar } from "./pipeline-ui";
 import { runVerification, precheckRequiredFiles, resolvePlanDocPath, planDocHasConfirmMarker } from "./auto-verifier";
@@ -44,6 +44,11 @@ import { finalizeHumanPipelineCompletion } from "./human-completion";
 import { extractAssistantMessages, extractToolCallRecords, strictCommitMeta, expectedFromCurrent } from "./session-state";
 import { stageMigrationResetCounters } from "./stage-exit/migration-reset";
 import { applyVerifyFail } from "./verify-advance";
+import {
+  checkFixReportWriteWhitelist,
+  FIX_REPORT_EDIT_VIOLATION_MESSAGE,
+} from "./fix-report-write-guard";
+import { protectedFixReportHash } from "./verifiers/fix-report-edit-verifier";
 import { safeWriteAuditLog, safeWriteStageAudit, writeAuditLog, setAuditPipelineContext } from "../utils/auditLog";
 // 194 Phase 3 (C5): caller gate + bound atomic commits
 import { gateStageToolCall, applyDeclarationRelay } from "./stage-executor/tool-consumption";
@@ -214,7 +219,7 @@ async function resolveStageDocPath(
 }
 
 /**
- * 229 Phase 4 (F4 / question 9): the review/fix loop's no-progress gate for
+ * the review/fix loop's no-progress gate for
  * the stage-advancer declaration path (wraps `noteReviewRoundOutcome`).
  *
  * Reads the CURRENT round's review report (the per-round `Code_Review_…_N`
@@ -621,11 +626,10 @@ async function routeConfirmReject(
     // so a leftover stamp must not leak into the target stage's deferral window.
     confirmGateDeferredAt: undefined,
   };
-  // 229 Phase 7 (F7/问题 6): review→fix routing captures the review report's
-  // PROTECTED-body hash as the fix stage's write-whitelist baseline; the fix
-  // exit refuses edits outside the allowed fields (fix-report-edit-verifier).
+  // Review→fix routing captures the review report's PROTECTED-body hash as the
+  // fix stage's write-whitelist baseline; the fix exit refuses edits outside
+  // the allowed fields (fix-report-edit-verifier).
   if (fromStage === "review" && toStage === "fix") {
-    const { protectedFixReportHash } = await import("./verifiers/fix-report-edit-verifier");
     const reportPath = await resolveStageDocPath(config, meta, "review");
     if (reportPath !== null) {
       try {
@@ -1928,7 +1932,7 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         // rule would otherwise keep the old `index`/`enteredAt`, so a PASS report
         // written before the re-entry could still satisfy the freshness baseline.
         if (currentStage === "review") {
-          // 229 Phase 5 (R5-Q2 A): the exhausted-loop RE-ENTRY ban — an
+          // the exhausted-loop RE-ENTRY ban — an
           // explicit re-entry into a banned review loop freezes (audited).
           const { loopBinding, guardLoopReentry } = await import("./auto-pipeline/loop-reentry-guard");
           const loop = loopBinding(config, meta, currentStage);
@@ -2087,7 +2091,7 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       // be consumed at settle. The fail branch below re-writes the debt after
       // this clear, so an actual fail declaration keeps its deferral semantics.
       //
-      // 229 Phase 4 (F4/question 9): the review/fix loop's no-progress ledger
+      // the review/fix loop's no-progress ledger
       // is evaluated AT DECLARATION TIME. `frozen` ⇒ IMMEDIATE return — no
       // debt write, no routing, no commit (the module already froze the flow
       // and audited `no_progress_detected`).
@@ -2334,6 +2338,26 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
       // (e) Advance to target stage
       // Record stage visit via shared helper (DRY with handoff, routeConfirmReject, verify-advance)
       const advanceTarget = resolvedTarget ?? "completed";
+
+      // The fix stage's REVIEW REPORT write-whitelist chain runs FIRST: a direct
+      // `stage_advance` exit never passes through `applyVerifyPass`, so the
+      // guard must be shared by both entries. A refusal audits
+      // `fix_report_edit_violation` and advances nothing.
+      if (currentStage === "fix") {
+        const whitelistCheck = await checkFixReportWriteWhitelist(config, meta);
+        if (whitelistCheck !== null) {
+          await safeWriteAuditLog("fix_report_edit_violation", {
+            pipelineId: meta.pipelineId,
+            stage: "fix",
+            detail: whitelistCheck,
+          }, "warn");
+          return {
+            success: false,
+            message: FIX_REPORT_EDIT_VIOLATION_MESSAGE,
+            currentStage,
+          };
+        }
+      }
 
       // 227 Phase 2 (D-8): design-review is DOMAIN-owned. Authorise BEFORE the
       // transition and let the state ride the SAME strict commit — no entry can

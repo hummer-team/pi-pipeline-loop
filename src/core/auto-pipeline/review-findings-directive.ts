@@ -1,13 +1,13 @@
 /**
  * @module auto-pipeline/review-findings-directive
- * 229 Phase 2 (F2/B7/B9): read-only previous-findings context for the
+ * read-only previous-findings context for the
  * design-review agent.
  *
  * Facts (boundaries):
  * - B7: this module is the findings DIRECTIVE (dispatch-time injection); the
  *   cross-round ledger PARSING base lives in
  *   `core/design-review/issue-ledger.ts`. The name avoids the 220
- *   `design-review-ledger-*` (decision台账溯源) confusion.
+ *   `design-review-ledger-*` (decision-ledger provenance) confusion.
  * - B9: synthesis is a PURE read-time function (deterministic over the same
  *   report bytes). Persistence of a legacy carry-over happens ONLY in the
  *   coordinator; the auto-verifier stays strictly read-only.
@@ -95,7 +95,7 @@ export function resolvePreviousOpenFindings(input: {
   };
 }
 
-/** 229 Phase 3 (B14): the declared update scope persisted on the state. */
+/** the declared update scope persisted on the state. */
 export type DeclaredScope = { phases: readonly number[]; sections: readonly string[] };
 
 /** One-line rendering of a declared scope ("Phase 2, Phase 5 (declared)"). */

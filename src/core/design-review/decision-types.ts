@@ -129,7 +129,7 @@ export type DesignReviewApprovalBasis =
       decidedAt: number;
     }
   | {
-      /** 229 Phase 5 (F5): a loop-exhaustion degraded release authorization. */
+      /** a loop-exhaustion degraded release authorization. */
       kind: "degraded-pass";
       reason: string;
       round: number;

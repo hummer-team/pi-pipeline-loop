@@ -25,7 +25,7 @@
  *   tokens never default to pass.
  * - issues: extracted from the `## Issues` heading section over the SAME
  *   cleaned content. The sentinel for "no issues" is an EXACT whole-item
- *   "None"/"无"; "无法恢复…" is still a real issue.
+ *   no-issue sentinel (bilingual); an "unrecoverable…" note is still a real issue.
  * - decision order:
  *     1. attribution/version unverifiable → invalid
  *     2. incomplete structure (missing/empty/duplicated section) → invalid
@@ -127,7 +127,7 @@ function sameCanonicalPath(a: string, b: string): boolean {
 }
 
 /**
- * 229 Phase 1 (B18): canonical issue extraction over a report SNAPSHOT.
+ * canonical issue extraction over a report SNAPSHOT.
  * Delegates to the SAME header-aware single-pass scan the verdict uses
  * (inert-line exclusion, heading-scoped section, exact whole-item sentinels)
  * so report-path consumers (coordinator recovery) never fall back to a second,
@@ -147,7 +147,7 @@ export function extractDesignReviewIssueItems(
   }));
 }
 
-/** Map a captured verdict token to pass/fail (不通过/FAIL/fail → fail). */
+/** Map a captured verdict token to pass/fail (the FAIL aliases → fail). */
 function tokenToVerdict(token: string): "pass" | "fail" {
   if (token === "不通过") return "fail";
   if (/^fail$/i.test(token)) return "fail";
@@ -197,18 +197,18 @@ export function verifyDesignReviewReportSnapshot(
     issueHeadingPattern?: string;
     smartDecisionMode?: boolean;
     /**
-     * 229 Phase 1 (F1/B11): blocking-set gate. Default TRUE — a verdict is
+     * blocking-set gate. Default TRUE — a verdict is
      * gated on BLOCKING issues (Blocker/High with Evidence) instead of "any
      * valid issue ⇒ FAIL". Pass `false` ONLY in tests/rollback to restore the
-     * pre-229 verdict semantics verbatim (legacy reads of old templates).
+     * pre-verdict semantics verbatim (legacy reads of old templates).
      */
     severityGate?: boolean;
     /**
-     * 229 Phase 2 (F2): require the cross-round `## Issue Ledger` and enforce
+     * require the cross-round `## Issue Ledger` and enforce
      * closure over `previousOpenIssues`. Phase 1 only reserves the option.
      */
     requireIssueLedger?: boolean;
-    /** 229 Phase 2 (F2): previous round's open/carry-over records (closure input). */
+    /** previous round's open/carry-over records (closure input). */
     previousOpenIssues?: readonly DesignReviewIssueRecord[];
   },
 ): DesignReviewReportVerdict {
@@ -306,7 +306,7 @@ export function verifyDesignReviewReportSnapshot(
     }
   }
 
-  // ── 3b. 229 Phase 2 (F2/B18): cross-round ledger CLOSURE (orthogonal) ─────
+  // ── 3b. cross-round ledger CLOSURE (orthogonal) ─────
   // When a previous round left open/carry-over items, EVERY id must re-appear
   // in this round's `## Issue Ledger` with a legal status. Missing ⇒ the
   // report is invalid (fail-closed) naming the missing ids — regardless of the
@@ -319,7 +319,7 @@ export function verifyDesignReviewReportSnapshot(
     if (!ledgerSection) {
       return {
         verdict: "invalid",
-        failures: ["missing Issue Ledger section heading (## Issue Ledger / ## 问题台账) for the cross-round closure"],
+        failures: ["missing Issue Ledger section heading (## Issue Ledger) for the cross-round closure"],
         reportHash,
       };
     }
@@ -347,8 +347,8 @@ export function verifyDesignReviewReportSnapshot(
     return { verdict: "invalid", failures: ["missing Issues section heading"], reportHash };
   }
 
-  // 229 Phase 1 (F1/B18): ONE header-aware enumeration (issue-ledger scan).
-  // Sentinels are stripped BEFORE record construction (问题 11); stable ids
+  // ONE header-aware enumeration (issue-ledger scan).
+  // Sentinels are stripped BEFORE record construction; stable ids
   // (`DR-<round>-n`) are shared with the report/ledger/receipt end-to-end.
   const scan = scanIssuesSection(issuesSection.lines, expectation.round);
   const records = scan.records;
@@ -363,7 +363,7 @@ export function verifyDesignReviewReportSnapshot(
     };
   }
 
-  // ── 5. Decision order (229 F1 strict order) ──────────────────────────────
+  // ── 5. Decision order (F1 strict order) ──────────────────────────────
   const hasPass = seen.some((s) => s.value === "pass");
   const hasFail = seen.some((s) => s.value === "fail");
 
@@ -379,7 +379,7 @@ export function verifyDesignReviewReportSnapshot(
 
   const severityGateOn = options?.severityGate !== false;
   if (severityGateOn) {
-    // Rule 3 (两轨一致): record legality — every non-sentinel record needs a
+    // Rule 3 (both tracks agree): record legality — every non-sentinel record needs a
     // legal severity; blocking records additionally need Evidence.
     const legality: string[] = [];
     for (const r of records) {
@@ -414,7 +414,7 @@ export function verifyDesignReviewReportSnapshot(
       return applySmartDecisionGate(base, lines, options?.smartDecisionMode);
     }
   } else if (issues.length > 0) {
-    // severityGate:false — pre-229 verdict rule verbatim: any valid issue fails.
+    // severityGate:false — pre-verdict rule verbatim: any valid issue fails.
     const passAlsoPresent = seen.some((s) => s.value === "pass");
     return applySmartDecisionGate(
       {

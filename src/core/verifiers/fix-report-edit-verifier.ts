@@ -1,10 +1,11 @@
 /**
  * @module verifiers/fix-report-edit-verifier
- * 229 Phase 7 (F7/问题 6): the fix-stage REVIEW REPORT write whitelist.
+ * The fix-stage REVIEW REPORT write whitelist.
  *
- * The fix executor may answer the review report ONLY in its allowed fields:
- * `是否修复` (disposition/status) and `证据` (evidence). Everything else —
- * the finding text, the severity (等级), the ids — must stay byte-stable.
+ * The fix executor may answer the review report ONLY in its allowed fields
+ * (the status / disposition and evidence lines, bilingual aliases included).
+ * Everything else — the finding text, the severity, the ids — must stay
+ * byte-stable.
  * The comparison strips the ALLOWED lines from both texts and compares the
  * remainder byte-for-byte (hash of the stripped body), so a finding rewrite
  * or severity inflation is refused (`fix_report_edit_violation`).
@@ -51,7 +52,7 @@ export function verifyFixReportEdits(input: {
   return {
     ok: false,
     violations: [
-      "fix_report_edit_violation — the review report's protected body changed: only 是否修复/状态 and 证据 lines may be edited by the fix stage (fix-report-edit-verifier)",
+      "fix_report_edit_violation — the review report's protected body changed: only the status and evidence lines may be edited by the fix stage (fix-report-edit-verifier)",
     ],
   };
 }
@@ -71,7 +72,7 @@ export function verifyFixReportEditsAgainstHash(input: {
   return {
     ok: false,
     violations: [
-      "fix_report_edit_violation — the review report's protected body changed: only 是否修复/状态 and 证据 lines may be edited by the fix stage (fix-report-edit-verifier)",
+      "fix_report_edit_violation — the review report's protected body changed: only the status and evidence lines may be edited by the fix stage (fix-report-edit-verifier)",
     ],
   };
 }

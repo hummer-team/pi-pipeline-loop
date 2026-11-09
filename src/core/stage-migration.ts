@@ -1,7 +1,7 @@
 /**
  * @module stage-migration
- * 229 Phase 5 (B12/问题 3): the SHARED forward stage-migration patch — built
- * once and used by BOTH the legacy `skip` decision and the 229 `advance`
+ * the SHARED forward stage-migration patch — built
+ * once and used by BOTH the legacy `skip` decision and the `advance`
  * exit, so a new stage visit is migration-clean in the exact same way.
  *
  * Facts the patch guarantees (measured off the `skip` migration):
@@ -10,7 +10,7 @@
  * - verification debt (`verifyFailures`), config-error flag, violations,
  *   hard-stop marker, retry counter and the confirm-gate deferral stamp
  *   clear;
- * - the left stage's summary is marked `skipped` (保留历史 summaries).
+ * - the left stage's summary is marked `skipped` (historical summaries kept).
  */
 
 import type { PipelineStage, SessionMeta } from "../types";

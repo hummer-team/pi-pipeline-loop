@@ -75,8 +75,24 @@ export function buildDesignReviewReportFeedback(opts: {
   // decision requirement (legacy unpinned operations resolve honestly: the
   // verifier's concrete failure line remains the authoritative hint).
   const smartMode = opts.meta.designReview?.operation?.reviewConfirmMode === "smart";
-  const message = renderReportFeedback(context, opts.failures, smartMode);
+  // the corrective copy lists the SAME required sections the
+  // verifier demands — a round that owes a closure restatement is told so.
+  const requireIssueLedger = hasIssueLedgerDebt(opts.meta);
+  const message = renderReportFeedback(context, opts.failures, smartMode, requireIssueLedger);
   return { reportDoc: context.reportPath, failures: opts.failures.map((f) => f.detail), message };
+}
+
+/**
+ * TRUE when the CURRENT round must restate a previous
+ * open set (a `## Issue Ledger` obligation). Mirrors the verifier's own
+ * `requireIssueLedger` input so the feedback and the check agree.
+ */
+function hasIssueLedgerDebt(meta: SessionMeta): boolean {
+  const state = meta.designReview;
+  if (state === undefined) return false;
+  if (state.legacyCarryOver !== undefined && state.legacyCarryOver.length > 0) return true;
+  const ledger = state.progressLedger;
+  return ledger !== undefined && ledger.openIds.length > 0;
 }
 
 /** The five identity rows this review operation MUST carry, with real values. */
@@ -113,6 +129,7 @@ function renderReportFeedback(
   },
   failures: readonly VerifyFailureItem[],
   smartMode: boolean,
+  requireIssueLedger: boolean,
 ): string {
   const identity = identityRows(context);
   const block: string[] = [];
@@ -135,7 +152,7 @@ function renderReportFeedback(
     .join("; ");
   if (aliasNote !== "") push(`Aliases: ${aliasNote}.`);
   push();
-  // 229 Phase 1 (F1/task 5): the blocking-set gate has two dedicated
+  // the blocking-set gate has two dedicated
   // corrective lines when the report fails record legality.
   const failureText = failures.map((f) => f.detail).join(" ");
   if (failureText.includes("is missing a legal severity")) {
@@ -152,9 +169,12 @@ function renderReportFeedback(
   push("Required sections — each EXACTLY once, any order, spacing/case free, and each with");
   push("real content (blank lines, unfilled {placeholders}, code blocks, blockquotes and HTML");
   push("comments do NOT count):");
-  // 229 Phase 0 (F2): the required list is shared with the section checker
-  // (`requiredReportSections`) — a required Issue Ledger renders here too.
-  for (const spec of requiredReportSections()) push(`  - ${spec.label}: ${spec.headingHint}`);
+  // the required list is shared with the section
+  // checker (`requiredReportSections(options)`) — a required Issue Ledger
+  // renders here too, so the corrective copy can never disagree with the check.
+  for (const spec of requiredReportSections({ requireIssueLedger })) {
+    push(`  - ${spec.label}: ${spec.headingHint}`);
+  }
   push();
   push("Follow this shape exactly:");
   push("```markdown");

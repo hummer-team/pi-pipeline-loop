@@ -124,7 +124,7 @@ export interface FieldRowsScan {
 
 /**
  * 194 C2: scan ALL declarations of a logical field across its accepted label
- * spellings (canonical + aliases, case-insensitive). "重复字段" (duplicate
+ * spellings (canonical + aliases, case-insensitive). A duplicated field
  * field) is an invalid receipt regardless of whether the values agree — a
  * receipt with two identity rows is ambiguous evidence.
  */
@@ -257,14 +257,14 @@ export const RECEIPT_IDENTITY_FIELDS = {
 
 /**
  * A plan-phase location marker inside a `### Changes Made` entry
- * (bilingual: "Phase 3" / "阶段3"). This is the MECHANICAL minimum behind
+ * (bilingual: "Phase 3" / the localized spelling). This is the MECHANICAL minimum behind
  * "fixed must state the actual Phase location modified" — semantic fix
  * QUALITY is judged by the next review round, never here.
  */
 const PHASE_LOCATION_RE = /(phase\s*\d+|阶段\s*\d+)/i;
 
-// 229 Phase 3 (B15): a `### Changes Made` entry may also declare a NON-Phase
-// top-level section by its title (`section:<title>`; B15 全章节覆盖). The
+// a `### Changes Made` entry may also declare a NON-Phase
+// top-level section by its title (`section:<title>`; B15 all-section coverage). The
 // regex stays LOCAL to this module (single source, reused by
 // parseChangesMadeLocations below). The title is bounded by the natural
 // entry separators (dash/pipe/comma/colon) so trailing prose never leaks in.
@@ -288,14 +288,14 @@ export function hasPhaseLocationMarker(lines: readonly string[]): boolean {
   return lines.some((line) => PHASE_LOCATION_RE.test(line));
 }
 
-/** 229 Phase 3 (B14): the DECLARED update scope, parsed from the receipt. */
+/** the DECLARED update scope, parsed from the receipt. */
 export interface DeclaredUpdateScope {
   phases: number[];
   sections: string[];
 }
 
 /**
- * 229 Phase 3 (F3/task 3): parse the DECLARED scope from `### Changes Made`
+ * parse the DECLARED scope from `### Changes Made`
  * entries. Accepts the same bilingual "Phase <n>" markers as
  * `hasPhaseLocationMarker` PLUS the `section:<title>` form for non-Phase
  * top-level sections (B15). Pure; order follows the first declaration.
@@ -319,7 +319,7 @@ export function parseChangesMadeLocations(lines: readonly string[]): DeclaredUpd
   return { phases, sections };
 }
 
-/** 229 Phase 3 (F3/task 3): one `- <issueId>: <phase note>` entry. */
+/** one `- <issueId>: <phase note>` entry. */
 export interface ChangesMadeIssueLink {
   /** Stable issue id (e.g. `DR-2-1`, legacy numeric ids stay as-is). */
   issueId: string;
@@ -328,7 +328,7 @@ export interface ChangesMadeIssueLink {
 }
 
 /**
- * 229 Phase 3 (F3/task 3): parse the per-issue `Changes Made` links
+ * parse the per-issue `Changes Made` links
  * (`- DR-2-1: Phase 3 — …`). Pure.
  */
 export function parseChangesMadeIssueLinks(lines: readonly string[]): ChangesMadeIssueLink[] {

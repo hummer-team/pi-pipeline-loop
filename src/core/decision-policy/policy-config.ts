@@ -38,12 +38,12 @@ const POLICY_BASE_DECISIONS: ReadonlySet<PipelineDecision> = new Set([
 const POLICY_DECISIONS_BY_REASON: Record<string, ReadonlySet<PipelineDecision>> = {
   max_loop_cycles: new Set(["set_budget", "rewind_last_round", "restart", "abort", "resume"]),
   /**
-   * 210 Phase 3 (R1-1 补全, Q15=A): the confirm-stall freeze allows ONLY
+   * 210 Phase 3 (Q15=A): the confirm-stall freeze allows ONLY
    * restart / abort — an automatic resume would defeat the very gate the
    * human rejected.
    */
   confirm_awaiting_human: new Set(["restart", "abort"]),
-  // 229 Phase 5 (问题 1/F5/R5-Q2 A): the exhaustible loop reasons allow the
+  // the exhaustible loop reasons allow the
   // degraded-pass advance and the budget-reset door along with the escapes.
   no_progress_detected: new Set(["advance", "reset_loop_budget", "restart", "abort"]),
   design_review_budget_exhausted: new Set(["advance", "reset_loop_budget", "restart", "abort"]),

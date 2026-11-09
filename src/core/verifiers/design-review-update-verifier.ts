@@ -113,10 +113,10 @@ export interface DesignReviewUpdateValidationInput {
   /** Operation id of the CURRENT update operation (the section must match THIS) */
   updateOperationId: string;
   /**
-   * Valid issue ids of the consumed report. 229 Phase 1 (B18): these are the
+   * Valid issue ids of the consumed report. these are the
    * report's STABLE ids (`DR-<round>-n`); pure-number ids are accepted as the
    * LEGACY mapping (by the current `## Issues` order) — that receipt-side
-   * rule is fully closed in 229 Phase 2 (task 5).
+   * rule is fully closed in (task 5).
    */
   issueIds: readonly string[];
   /**
@@ -131,7 +131,7 @@ export interface DesignReviewUpdateValidationInput {
   /** 194 C2: plan document path a standalone receipt must name. */
   planDoc?: string;
   /**
-   * 229 Phase 3 (F3/B15): hashes of ALL top-level `##` plan sections captured
+   * hashes of ALL top-level `##` plan sections captured
    * BEFORE the update (preparation-time baseline). Optional for backward
    * compatibility — absent ⇒ the mechanical scope check degrades to the
    * legacy aggregate Phase-location check (and audits
@@ -153,7 +153,7 @@ export type DesignReviewUpdateVerdict =
        */
       receiptHash?: string;
       /**
-       * 229 Phase 3 (F3/问题 20): structured declared-vs-actual scope. Present
+       * structured declared-vs-actual scope. Present
        * only when `baselineSectionHashes` was supplied (mechanical check ran).
        */
       scope?: UpdateScopeEvidence;
@@ -161,17 +161,17 @@ export type DesignReviewUpdateVerdict =
   | {
       status: "invalid";
       failures: string[];
-      /** 229 Phase 3 (问题 20): scope evidence attached to scope failures. */
+      /** scope evidence attached to scope failures. */
       scope?: UpdateScopeEvidence;
     }
   | { status: "paused"; reason: "no-change" | "new-decision"; detail?: string };
 
-/** 229 Phase 3 (B14): declared/changed/undeclared scope keys. */
+/** declared/changed/undeclared scope keys. */
 export interface UpdateScopeEvidence {
   declared: { phases: number[]; sections: string[] };
   changed: string[];
   undeclared: string[];
-  /** 229 Phase 3: legacy mode (no baseline hashes ⇒ aggregate check only). */
+  /** legacy mode (no baseline hashes ⇒ aggregate check only). */
   legacy?: boolean;
 }
 
@@ -200,7 +200,7 @@ function samePath(a: string, b: string): boolean {
  * empty justifications, missing/duplicate entries fail the contract; the
  * surviving per-issue entries are returned for the sentinel check.
  *
- * 229 Phase 2 (B18): report ids are STABLE (`DR-<round>-n`). A pure-number
+ * report ids are STABLE (`DR-<round>-n`). A pure-number
  * row id is the LEGACY mapping — resolved BY THE CURRENT `## Issues` ORDER
  * from `issueIds` (index n-1). An out-of-range/duplicated numeral stays
  * "unknown" (fail-closed, the mismatch text names the id form).
@@ -254,7 +254,7 @@ function collectDispositions(
       count: 1,
       disposition: row.disposition,
       justification: row.justification,
-      // 229 Phase 3 (B18): keep the raw row id so per-issue `### Changes Made`
+      // keep the raw row id so per-issue `### Changes Made`
       // binding ALSO matches rows written in the legacy numeric form.
       ...(resolvedId !== row.issueId ? { legacyRowId: row.issueId } : {}),
     });
@@ -322,7 +322,7 @@ function validateStandaloneReceipt(
   const failures: string[] = [];
 
   // Storage evidence first: a receipt the snapshot layer could not read is a
-  // hard invalid — "缺文件/读取错误" never falls back to the plan body.
+  // hard invalid — a missing file or a read error never falls back to the plan body.
   if (output.receiptReadError !== undefined) {
     return {
       status: "invalid",
@@ -381,7 +381,7 @@ function validateStandaloneReceipt(
   if (changeEntries.length === 0) {
     failures.push("standalone update receipt has no `### Changes Made` entries");
   } else if (input.baselineSectionHashes === undefined) {
-    // LEGACY receipt (229 Phase 3): aggregated check only; the caller audits
+    // LEGACY receipt (Phase 3): aggregated check only; the caller audits
     // update_receipt_legacy_binding when the verdict reports this mode.
     const anyFixed = [...seen.values()].some((e) => e.disposition === "fixed");
     if (anyFixed && !hasPhaseLocationMarker(changeEntries)) {
@@ -391,7 +391,7 @@ function validateStandaloneReceipt(
     }
     scopeEvidence = { declared: { phases: [], sections: [] }, changed: [], undeclared: [], legacy: true };
   } else {
-    // ── 229 Phase 3 (F3): mechanical declared-vs-actual scope ─────────────
+    // ── mechanical declared-vs-actual scope ─────────────
     const declared = parseChangesMadeLocations(changeEntries);
     const perIssueLinks = parseChangesMadeIssueLinks(changeEntries);
     const linkByIssue = new Map(perIssueLinks.map((l) => [l.issueId, l]));

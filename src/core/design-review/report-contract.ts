@@ -9,11 +9,11 @@
  * - Five identity rows MUST be present, filled and non-contradictory:
  *   `**pipeline**`, `**plan**`, `**round**`, `**operation**` (alias
  *   `**operationId**`), `**input hash**` (aliases `**baselinePlanHash**`,
- *   `**输入版本**`, `**计划 hash**`). Equality with the CURRENT run's values is
+ *   the shipped bilingual input-version rows). Equality with the CURRENT run's values is
  *   enforced by the verifier, never here.
  * - Exactly ONE heading each for Summary / Issues / Recommendations / Verdict.
- *   Bilingual aliases are accepted (摘要/总结, 问题/问题列表, 建议/修改建议,
- *   结论/判定). The Issues anchor honours the `runtime: issueHeading` pattern
+ *   Bilingual aliases are accepted (summary, issues, recommendations,
+ *   verdict). The Issues anchor honours the `runtime: issueHeading` pattern
  *   declared in the deployed verify.md (declaration is behavior).
  * - Section content must be SUBSTANTIVE: blank lines, markdown decoration,
  *   unfilled `{placeholder}` tokens and inert content (fenced code, block
@@ -70,7 +70,7 @@ export const DESIGN_REVIEW_IDENTITY_FIELDS: readonly DesignReviewIdentityFieldSp
   },
 ];
 
-/** Canonical report sections (193: all four are mandatory; 229 adds the optional Issue Ledger). */
+/** Canonical report sections (193: all four are mandatory; adds the optional Issue Ledger). */
 export type DesignReviewReportSectionKey = "summary" | "issues" | "recommendations" | "verdict" | "issueLedger";
 
 /** Heading specification for one mandatory section. */
@@ -83,7 +83,7 @@ export interface DesignReviewReportSectionSpec {
   /** Hint shown in corrective messages (canonical heading + aliases) */
   headingHint: string;
   /**
-   * 229 Phase 0 (F2): whether the section's ABSENCE fails the contract.
+   * whether the section's ABSENCE fails the contract.
    * The four 193 sections are always required; the cross-round `Issue
    * Ledger` becomes required ONLY when the caller passes
    * `requireIssueLedger === true` (a previous round left open items).
@@ -143,8 +143,8 @@ export interface DesignReviewReportContractOptions {
   /** Require the `**input hash**` row (default true, same condition as above). */
   requireInputHash?: boolean;
   /**
-   * 229 Phase 0 (F2): require the cross-round `## Issue Ledger` section when
-   * a previous round left open items. Default: not required (缺 ledger 不报错).
+   * Require the cross-round `## Issue Ledger` section when a previous round
+   * left open items. Default: not required (a missing ledger is fine).
    * NOTE (B11): verifier-only tuning switches such as `severityGate` NEVER
    * enter this contract layer — it governs structure/identity only.
    */
@@ -152,7 +152,7 @@ export interface DesignReviewReportContractOptions {
 }
 
 /**
- * 229 Phase 0 (F2): the sections the contract REQUIRES for this run — the four
+ * the sections the contract REQUIRES for this run — the four
  * 193 sections always, plus the `## Issue Ledger` when `requireIssueLedger`
  * is explicitly true. Shared by the section checker and the corrective
  * feedback renderer so both always agree on the same list.
@@ -231,7 +231,7 @@ export function checkDesignReviewReportIdentity(
 }
 
 /**
- * Check the required sections (229 Phase 0: `requiredReportSections(options)`,
+ * Check the required sections (`requiredReportSections(options)`,
  * so a missing `Issue Ledger` fails ONLY when the caller required it):
  * exactly one heading each plus substantive content under it. Failures are
  * reported in contract order, independent of how the report is arranged (any

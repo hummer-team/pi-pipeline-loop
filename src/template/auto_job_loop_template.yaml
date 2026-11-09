@@ -83,11 +83,35 @@ designReview:
                                # stop = 本次 FAIL 即终止本文档（走收尾事务，
                                # stopReason budget_exhausted），再按 docs.onFailure 调度。
 
+# 回环耗尽出口（顶层键，两个回环各自独立；缺省 = 不写，消费处按回环默认 advance 解析）。
+#   advance     — 降级放行到回环出口：design-review → 其 nextStage（默认 develop），
+#                 review/fix → fix 的 nextStage（默认 completed；阻断数 Blocker+High > 0
+#                 时降级为 awaiting_human）；出口不得回指本回环入口。
+#   await-human — 保持冻结，只写审计 loop_exhausted_await_human。
+#   stop        — 既有 stop-and-report（freeze_unresolvable(<reason>)）。
+# 优先级：byReason[reason] → 显式 onExhausted[loop] → onFreeze →
+#         回环默认 advance → stop-and-report。
+#         默认 advance 只在【没有显式 onFreeze】时生效：旧 job 写了
+#         onFreeze: stop-and-report / abort 时行为逐字不变（先于默认值求值）。
+# 注意：maxTotalLoops 软熔断（budget_exhausted）与 design-review 轮次预算
+#       （design_review_budget_exhausted）是不同原因，不走本出口。
+onExhausted: {}                # advance | await-human | stop（空 = 未配置 ⇒ 回环默认 advance）
+  # designReview: advance      # 显式写出 advance 才会压过本文件 freezePolicy.onFreeze。
+  # reviewFix: advance
+
+onExhaustedTarget:             # nextStage | awaiting_human（缺省 nextStage）
+  designReview: nextStage      # = design-review 的 nextStage（默认 develop）
+  reviewFix: nextStage         # = fix 的 nextStage（默认 completed）
+                               # 写 awaiting_human 会把 advance 降级为 await-human（解析期 warning）
+
 reviewFix:
   maxRounds: 6                 # → 覆盖 pipeline_loop.json 的 maxLoopCycles
   maxLoopsPerStage: 6          # → 覆盖 pipeline_loop.json 的 maxLoops
                                # 澄清语义：同一阶段（develop/fix）的重试/校验上限，不是"文档级"上限；
                                # 不新增 maxLoopsPerDoc（文档级预算由 stopConditions.maxTotalLoops 承担）。
+                               # 预算耗尽在决策菜单里可用 `Reset loop budget (raises the cap)`
+                               # （决策键 reset_loop_budget）现场抬高：只抬高上限、不清零计数，
+                               # 并清除该回环的 exhaustedLoops 条目以解除再入封禁。
 
 # Q15：verify 失败次数上限，达到即硬停（stopReason verify_failures）。
 # 【继承口径】本键未配置时不 overlay，沿用 pipeline_loop.json 的 maxVerifyAttempts。
@@ -108,7 +132,9 @@ writePolicy:
 # JOB-PRIVATE：只由冻结决策自动驾驶消费，【永不】写进 pipeline_loop.json 的
 # decisionPolicy（那是 210 provider 链的地盘：FreezeAction 字符串 vs 规则对象，结构不兼容）。
 freezePolicy:
-  onFreeze: resume             # resume | abort | stop-and-report（缺省优先级：byReason → onFreeze → stop-and-report）
+  onFreeze: resume             # resume | abort | stop-and-report
+                               # 缺省优先级：byReason → 显式 onExhausted → onFreeze →
+                               # 回环默认 advance → stop-and-report（详见上方 onExhausted 段）
   maxAutoResumes: 2            # 跨文档累计，耗尽即 stop-and-report
   byReason: {}                 # 键=冻结原因（如 verify_budget）；值只能是 resume|abort|stop-and-report
                                # 与 stopConditions.stopOnBlockedReasons 同时命中 → 硬停优先。

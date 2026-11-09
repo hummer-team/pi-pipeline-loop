@@ -93,7 +93,7 @@ const KNOWN_POLICY_REASONS = new Set<string>([
   "verify_config_error",
   "verify_failure_loop_overflow",
   "violation_overflow",
-  // 229 Phase 4 (F4): the two loop-exhaustion freeze reasons route through
+  // the two loop-exhaustion freeze reasons route through
   // the decisionPolicy chain exactly like the historical reasons.
   "no_progress_detected",
   "design_review_budget_exhausted",

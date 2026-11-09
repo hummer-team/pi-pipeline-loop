@@ -1723,6 +1723,13 @@ RuntimeCtx ←→ SessionState (meta.json 共享)
 
 **frozen-at-fix 特殊过滤**：当 pipeline 冻结在 fix 阶段时，二级菜单（Choose stage…）不含 `completed` 终态项。fix 必须先经过 review 才能进入终态（Phase 6 / 182 G5 强约束：进入 fix 必经 review）。`awaiting_human` 原本就不在二级菜单列表中。
 
+**耗尽类冻结的附加项**：冻结原因为回环耗尽（`max_loop_cycles` / `no_progress_detected` / `design_review_budget_exhausted` / `review_loop_budget_exhausted`）时，菜单额外提供两项（详见 §19.4.1）：
+
+- `Degraded pass (advance)` — 降级放行到回环出口（完成闸仍必须通过）
+- `Reset loop budget (raises the cap)` — 只抬高上限、不清零计数，并解除该回环的再入封禁
+
+`max_loop_cycles` 的专用菜单顺序为：`Set round budget` → `Degraded pass (advance)` → `Reset loop budget` →（有回边时）`Rewind last_round` → `Restart & New` → `Abort & Exit` → `Resume`。其余耗尽原因在原六项之后追加这两项。宿主没有 `ui.input` 时两个「填数字」项（`Set round budget` / `Reset loop budget`）一并隐藏，`advance` 保留。
+
 ### 13.3 四入口
 
 | 入口             | 触发方式      | 说明                                                                       |
@@ -1740,7 +1747,7 @@ RuntimeCtx ←→ SessionState (meta.json 共享)
 - 菜单被流式输出打断（<1500ms 的 `undefined`）或决策未生效 → 5s 起指数退避自动重弹（封顶 60s）；
   用户 Esc（>=1500ms）后停止主动重试，下一次 agent settle 仍会重弹
 - `--force-resume` flag → 跳过菜单直走旧 resume 路径（逃生开关）
-- 菜单能力降级：宿主无 `ui.input` 时 `max_loop_cycles` 菜单不提供「Set round budget」，请用 Resume（重置轮次计数）或 Restart & New
+- 菜单能力降级：宿主无 `ui.input` 时 `max_loop_cycles` 菜单不提供「Set round budget」与「Reset loop budget (raises the cap)」，请用 Resume（重置轮次计数）或 Restart & New；降级放行 `Degraded pass (advance)` 仍可用
 - 菜单 decided 且 choose_stage → 状态栏即时同步 + 自动派发 stage executor
 - awaiting_human 的 "Resume" 特例行为不变（回跳 previousStage，173-C9 语义）
 
@@ -2010,9 +2017,10 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 - 位置：只扫描 `docs/jobs/`（**不递归**），且只认 `*_loop.yaml` 与 `*_loop.yml`（两者等价）；按 mtime 取最新的 ≤5 份。其他 `*.yaml`/`*.yml` 不会被读取，菜单会给出忽略清单（改名提示）。该目录**不在** `archive.dirs` 的默认归档范围，任务文件不会随设计文档被归档移动。若同名 `.yaml` 与 `.yml` 并存，按 `.yaml` 启动并给出歧义告警（菜单行追加 `both .yaml and .yml present`），不阻断。
 - 只读：插件**永不**回写 job 文件；进度状态写入 `.pi/auto_pipeline/{jobId}/state.json`（sidecar）。`.pi/auto_pipeline/` 与 `.pi/audit/` 同级，属于运行期产物，**不随任务归档**。
 - `jobId` = 文件名去掉 `.yaml`/`.yml`（**含 `_loop` 后缀**，如 `demo_loop.yaml` → `demo_loop`），只允许 `[A-Za-z0-9._-]`；含路径分隔符/`..` 一律拒绝。`--job` 收 `<name>_loop`，并容忍尾部 `.yaml`/`.yml`（`--job demo_loop`、`--job demo_loop.yaml`、`--job demo_loop.yml` 等价）；`.YAML`/`.YML` 大写不支持。
-- 缺省值在解析期填满（下游永远看不到 `undefined`）：`tier: assisted`、`confirm: { plan: auto, review: auto, design-review: smart }`、`clarify.maxRounds: 5`、`clarify.onExhausted: stop`、`verify.maxAttempts: 3`、`writePolicy.gitModify: block`、`defaults.startStage: clarify`、`finalLoopGrace: 1`（上限 3，`0` 关闭）、`maxTotalLoops: 20`、`designReview.maxRounds: 3`、`reviewFix.maxRounds: 6`、`reviewFix.maxLoopsPerStage: 6`、`maxAutoResumes: 2`、`wallClockMs: 0`、`maxTotalFreezes: 0`（不限制）。
+- 缺省值在解析期填满（下游永远看不到 `undefined`）：`tier: assisted`、`confirm: { plan: auto, review: auto, design-review: smart }`、`clarify.maxRounds: 5`、`clarify.onExhausted: stop`、`verify.maxAttempts: 3`、`writePolicy.gitModify: block`、`defaults.startStage: clarify`、`finalLoopGrace: 1`（上限 3，`0` 关闭）、`maxTotalLoops: 20`、`designReview.maxRounds: 3`、`reviewFix.maxRounds: 6`、`reviewFix.maxLoopsPerStage: 6`、`maxAutoResumes: 2`、`wallClockMs: 0`、`maxTotalFreezes: 0`（不限制）。**唯一例外**：回环耗尽键 `onExhausted` / `onExhaustedTarget` 保留 `undefined`（见下条与 §19.4.1）。
 - **`clarify.maxRounds` 口径（226）**：`maxRounds` 是**真实派发次数**预算 —— 每次成功的 clarify 执行者派发 +1（startup 轮与 settle 轮同租），派发失败**回滚**不计数（`clarify_round_refund`）。`deferred`（同 agent 孪生在飞）按「**同一轮已预留**」计费：defer 时刻即计入 `maxRounds`（`pendingSpawns` 会派发**同一轮**，dequeue 侧不再重复计费），不产生退款行；若该队列条目在真正派发前丢失，预留回滚并在下一次 settle 重派（与「一次成功派发 = 一次计数」等价）。消耗上限后按 `clarify.onExhausted` 分流。clarify 的失败重试会经 `freezePolicy`（默认 `resume`）**重复占用 `totalFreezes`**：若把 `maxTotalFreezes` 设得很小，clarify 重派可能先耗光冻结预算；建议 `maxTotalFreezes: 0`（不限）或 ≥ `clarifyStalls`（+1）；`maxAutoResumes` 对 clarify 重试偏紧（默认 2），建议 ≥ 3。
-- fail-fast（**不接受**静默降级）：`tier` 只允许 `rule` / `assisted`；`confirm` 是**唯一决策源**，键集合固定为 `plan` / `review` / `design-review`（未知键**报错**），值只允许 `auto` / `smart` / `manual`（未知 mode 报错），且 `confirm.plan` / `confirm.review` **不接受 `manual`**（无人值守无法回答 TUI 门）；`designReview.mode` 是 **deprecated 别名**（等价于 `confirm.design-review`，两者都显式且不同 → 报错；只写别名 → 生效并给一条 deprecation 告警）；`designReview.enabled` 只接受 boolean；`designReview.onFail` 只允许 `auto-revise` / `stop`；`writePolicy.gitModify` 只允许 `allow` / `block`；`defaults.startStage` 只允许可恢复阶段或 `auto`；`freezePolicy.byReason` 的值只能是 `resume` / `abort` / `stop-and-report`。未知顶层键只告警。
+- fail-fast（**不接受**静默降级）：`tier` 只允许 `rule` / `assisted`；`confirm` 是**唯一决策源**，键集合固定为 `plan` / `review` / `design-review`（未知键**报错**），值只允许 `auto` / `smart` / `manual`（未知 mode 报错），且 `confirm.plan` / `confirm.review` **不接受 `manual`**（无人值守无法回答 TUI 门）；`designReview.mode` 是 **deprecated 别名**（等价于 `confirm.design-review`，两者都显式且不同 → 报错；只写别名 → 生效并给一条 deprecation 告警）；`designReview.enabled` 只接受 boolean；`designReview.onFail` 只允许 `auto-revise` / `stop`；`writePolicy.gitModify` 只允许 `allow` / `block`；`defaults.startStage` 只允许可恢复阶段或 `auto`；`freezePolicy.byReason` 的值只能是 `resume` / `abort` / `stop-and-report`；`onExhausted.{designReview,reviewFix}` 只允许 `advance` / `await-human` / `stop`；`onExhaustedTarget.{designReview,reviewFix}` 只允许 `nextStage` / `awaiting_human`。未知顶层键只告警。
+- **回环耗尽键的缺省**：`onExhausted` / `onExhaustedTarget` 未配置时保留 `undefined`（不是填默认值），消费处按回环默认 `advance` / `nextStage` 解析；因此"未写"与"显式写 `advance`"在优先级上不同（见 §19.4.1）。`onExhaustedTarget.*: awaiting_human` 与显式 `onExhausted: advance` 同时出现时，解析期给一条 warning（`advance` 降级为 await-human）。
 - **已移除的键（写入即报错，绝不静默降级）**：`clarify.mode`、`clarify.fallback`、`clarify.answerStrategy`、`designReview.failAction`（改名 `onFail`）、`decisionPolicy`（改名 `freezePolicy`）、`audit.recordAutoDecisions`（改名 `autoDecisions`）、`stopConditions.maxConsecutiveVerifyFailures`（改用 `verify.maxAttempts`）。
 - 继承口径：`verify.maxAttempts` 与 `writePolicy.gitModify` 在 job **未配置**时不 overlay（沿用 `pipeline_loop.json`）；其余键均为 job 必填默认。
 - `writePolicy.allowGlobs` 映射到 `protect.whitelistAllow`，与 `protect.allow` **不同**：前者只豁免 `whitelist_miss`，后者只豁免 gitignore 动态保护。
@@ -2058,6 +2066,49 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 
 > 预算互不影响：`designReviewRounds` 达限不会冻结循环预算，`totalLoops` 达限也不会冻结 design-review 轮次。结果消费路径（`review_running` / `update_ready` / `update_running`）**永不**因轮次预算冻结。
 
+### 19.4.1 耗尽出口：`onExhausted` / `advance` / `reset_loop_budget`
+
+两个回环的预算耗尽与「无进展」判定都以冻结告终，并可选择走**降级放行**出口。回环身份优先：同一份 job 里 design-review 与 review/fix 的策略互不串用。
+
+| 回环 | 预算 / 判据 | 冻结原因 |
+|---|---|---|
+| design-review | `designReview.maxRounds` | `design_review_budget_exhausted` |
+| review/fix | `reviewFix.maxRounds`（overlay → `maxLoopCycles`） | `max_loop_cycles` / `review_loop_budget_exhausted` |
+| review/fix 无进展 | 连续 2 轮阻断数未下降且 `openIds` 未收缩 | `no_progress_detected` |
+
+**job 键**（顶层，v1 只有这两个回环键；解析期保留 `undefined`，取值走枚举白名单）：
+
+```yaml
+onExhausted:            # advance | await-human | stop
+  designReview: advance # 缺省（不写）= 回环默认 advance
+  reviewFix: advance
+onExhaustedTarget:      # nextStage | awaiting_human；缺省 nextStage
+  designReview: nextStage
+  reviewFix: nextStage
+```
+
+- `advance`：design-review → 其配置的 `nextStage`（默认 `develop`），并写 `degradedPass`（`scope: "loop-exit"`，条目 `status: "carry-over"`）供下游 develop-handoff 提示；review/fix → `fix` 的 `nextStage`（默认 `completed`），仅当阻断数（Blocker+High）为 0 时保留 `completed`，否则降级为 `awaiting_human`。目标不得回指本回环入口（`fix → review` 被运行期拓扑校验拒绝，冻结保持 + 审计 `exhaustion_target_loops_back`）。
+- `await-human`：保持冻结，只写审计 `loop_exhausted_await_human`；`onExhaustedTarget: awaiting_human` 与之等价，且会把 `advance` 降级为它。
+- `stop`：既有 stop-and-report；`freeze_unresolvable(<reason>)` **只**由该出口与真实不可解冻结产生，`advance`/`await-human` 走 `exhausted(<reason>)`。
+- 显式 `onExhausted` 覆盖 `onFreeze`；**回环默认 `advance` 只在没有显式 `onFreeze` 时生效**——旧 job 写了 `freezePolicy.onFreeze: stop-and-report`（或 `resume`）时行为逐字不变。
+
+**优先级**（`freeze-autopilot` 对每个冻结原因逐次求值）：
+
+```
+byReason[reason] → 显式 onExhausted[loop] → onFreeze → 回环默认 advance → stop-and-report
+```
+
+`maxAutoResumes` 只约束 `resume`：`byReason` / `onFreeze` 解析为 `resume` 且跨文档自动解冻次数用尽时降级为 `stop-and-report`。
+
+**决策菜单**（owner-only；宿主无 `ui.input` 时隐藏数值输入项）：
+
+| 菜单项 | 决策 | 语义 |
+|---|---|---|
+| `Degraded pass (advance)` | `advance` | 人类轨道的降级放行；目标同样由 `loop-exhaustion` 解析，完成闸（§19.12）仍必须通过 |
+| `Reset loop budget (raises the cap)` | `reset_loop_budget` | 只抬高上限、不清零计数（design-review 基线 = `designReviewRounds`，review/fix 基线 = `loopCycleCount`），并清除该回环的 `exhaustedLoops` 条目以解除再入封禁 |
+
+耗尽类冻结（`max_loop_cycles`）走专用菜单：`Set round budget` → `Degraded pass (advance)` → `Reset loop budget` →（可选）`Rewind last_round` → `Restart & New` → `Abort & Exit` → `Resume`；其余耗尽原因在原 6 项菜单末尾追加 `advance` 与 `reset_loop_budget`。`exhaustedLoops` 命中时进入该回环的新一轮派发会被拒绝（冻结 + 审计 `loop_reentry_blocked`），必须先 `reset_loop_budget`。
+
 ### 19.5 软停 / 硬停：两个函数、两个 seam
 
 | 函数 | 调用位置 | 判定 |
@@ -2088,7 +2139,7 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 | design-review 入口授权 | 第 4 参 `{ autoPipeline: { jobId } }`：保留 child 拒绝与前置校验，跳过 TUI 检测与确认，审计 `authorised_auto` |
 | manual FAIL | auto job 下 `manual` FAIL **无菜单**：`revise-plan` 声明按 `onFail`（`auto-revise` 修订 / `stop` 硬停），`request-human` 声明一律 **stop-and-report**（`design_review_manual_fail`）；绝不伪造人工裁决（见 §19.10） |
 | 写/命令对话框 | auto 活跃时：受保护路径、危险命令一律 `block`（`ask` 也**不放行**）；`whitelist_miss` 按解析后的模式：`allow` 放行，`deny`/`ask` 拦截 |
-| 冻结决策 | `byReason[reason]` → `onFreeze` → `stop-and-report`；`stop-and-report` **永不**回落 210 provider 链；`maxAutoResumes` 用尽即停；`set_budget` 直接按取消处理（不追加预算）；auto 活跃但 job 文件/锁记录不可读（`readActiveJobContext` 为空）时按 `stopReason: job_drift` 收尾，同样不回落 provider |
+| 冻结决策 | `byReason[reason]` → 显式 `onExhausted[loop]` → `onFreeze` → 回环默认 `advance` → `stop-and-report`（§19.4.1）；`stop-and-report` **永不**回落 210 provider 链；`maxAutoResumes` 用尽即停；`set_budget` 直接按取消处理（不追加预算）；auto 活跃但 job 文件/锁记录不可读（`readActiveJobContext` 为空）时按 `stopReason: job_drift` 收尾，同样不回落 provider |
 
 ### 19.8 `pipeline_loop.json` 新增键（219 Phase 0）
 
@@ -2120,6 +2171,23 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 | `pipeline_auto_already_running`（224：running 守卫拒绝启动；固定含 `jobId`/`doc`/`stage`/`mode`，`mode` 为证据分类 `running`/`stalled`） | 否 |
 | `pipeline_auto_start_stage_unexecutable`（224：agent 映射/派发通道缺失、会话 meta 不可读或最终派发结果证实无人执行。`reason` 取 `no_agent`/`no_channel`/`no_meta`：前两者为起跑前失败，**文档失败**；`no_meta` 为 fail-open，文档保持 `running`、仅写 1 条审计，靠 `/pipeline-resume` 恢复。后置失败另附 `outcome`） | 否 |
 
+回环耗尽相关事件（不受 `audit.autoDecisions` 控制，安全/终态语义）：
+
+| 事件 | 含义 |
+|---|---|
+| `loop_budget_exhausted` | 回环轮次/循环预算耗尽（`loop` / `round` / `maxRounds` / `reason`） |
+| `no_progress_detected` | review/fix 连续 2 轮阻断数未下降且 `openIds` 未收缩 |
+| `no_progress_loop_mismatch` | 台账的 loop 身份与当前阶段不一致（身份优先，不串用计数） |
+| `degraded_pass_written` / `degraded_pass_duplicate` | 降级放行记录写入 / 幂等命中复用既有记录 |
+| `degraded_pass_blocked_by_severity` | 目标 `completed` 但阻断数（Blocker+High）> 0 → 目标降级为 `awaiting_human` |
+| `degraded_release_unbound` | 放行所需的 open 集/身份不可得 → fail-closed 拒绝放行 |
+| `loop_exhausted_await_human` | `advance` 被解析为 await-human，冻结保持 |
+| `loop_budget_reset` | `reset_loop_budget` 抬高上限并解除再入封禁 |
+| `loop_reentry_blocked` | 已耗尽回环被再次派发 → 拒绝并冻结 |
+| `exhaustion_target_loops_back` | 出口目标回指本回环入口 → 拒绝，冻结保持 |
+| `review_pending_fail_released_by_advance` | `advance` 到终态时释放 `reviewPendingFail` |
+| `fix_report_edit_violation` | fix 阶段越界改动 review 报告的受保护内容 |
+
 ### 19.10 `confirm` 决策矩阵（auto / smart / manual × PASS / FAIL）
 
 `confirm` 是**唯一决策源**：`confirm.plan` / `confirm.review` / `confirm["design-review"]`。
@@ -2136,6 +2204,8 @@ FAIL → plan 修正的回执**不再内嵌 plan 正文**：插件派生独立�
 > `enabled: true` 却拿不到可用的 `stages["design-review"]`（disabled / `verify.require:false` / 无 `agentPath`）→ 启动前拒绝（配置冲突，绝不静默跳过）；`tier: assisted` 不能 `enabled: false`。
 
 > **226 终态标签口径**：`onFailure: stop` 的文档失败终止 job 时 `stopReason=doc_failed`（不再误用 `budget_exhausted`；loop brake 的软停仍是 `budget_exhausted`）；冻结终态的 job 级 `stopReason` 保持 `freeze_unresolvable`，**文档级** `failReason` 携带来源（两个硬停入口一致）：settle seam `freeze_unresolvable(<blockedReason>)`，freeze autopilot `freeze_unresolvable(<reason>)`。
+>
+> **归因细分**：只有 `stop-and-report` 产生 `freeze_unresolvable(<reason>)`（真实不可解）；走耗尽出口的冻结改记 `exhausted(<reason>)`（`advance` / `await-human` 共用），回环预算耗尽另写审计 `loop_budget_exhausted`（`loop` / `round` / `maxRounds` / `reason`）。`no_progress_detected` 不是预算原因，保留自己的审计。
 
 ### 19.11 任务连续性（`/pipeline-auto` 之外同样生效）
 

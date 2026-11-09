@@ -300,7 +300,7 @@ export async function coordinateDesignReview(
     return { status: "not-applicable" };
   }
 
-  // 229 Phase 5 (R5-Q2 A): the exhausted-loop RE-ENTRY ban — a design-review
+  // the exhausted-loop RE-ENTRY ban — a design-review
   // dispatch inside a banned loop freezes (audited) before any counting.
   const reentryBinding = drState !== undefined && meta.currentStage === "design-review" ? "designReview" : null;
   if (reentryBinding !== null) {
@@ -328,7 +328,7 @@ export async function coordinateDesignReview(
     if (patch) {
       const committed = ctx.session.updateMeta(patch);
       effectiveMeta = committed ?? ({ ...meta, ...patch } as SessionMeta);
-      // 229 Phase 4 (B10/R1-Q5 C): the SAME counting point MIRRORS the doc's
+      // the SAME counting point MIRRORS the doc's
       // cumulative design-review round count into the job sidecar so an
       // auto re-run inherits the budget (`round-budget.ts` stays pure, B17).
       // Failures only audit — budget enforcement keeps meta as truth.
@@ -718,7 +718,7 @@ async function handleReviewRunning(
     return { status: "handled", action: "pending", reason: "report_identity_stale" };
   }
 
-  // 229 Phase 4 (F4/R3-Q4 B): design-review loop no-progress accounting —
+  // design-review loop no-progress accounting —
   // evaluated ONCE per verified report conclusion, from the SAME trusted
   // outcome. A mismatched loop identity or a shrinking open set resets the
   // streak (`evaluateNoProgress` is PURE); an exhausted streak freezes the
@@ -800,7 +800,7 @@ async function handleReviewRunning(
 }
 
 /**
- * 229 Phase 4 (F4): design-review loop no-progress accounting.
+ * design-review loop no-progress accounting.
  *
  * Snapshots the verified report's open-issue set into
  * `designReview.progressLedger` (loop: "designReview"), evaluates it against
@@ -836,7 +836,7 @@ async function noteDesignReviewNoProgress(
     compileHeadingRe(undefined, DEFAULT_ISSUE_HEADING_PATTERN),
   )?.lines ?? [];
   const issueRecords = parseIssuesSection(sectionLines, drState.round);
-  // 229 Phase 4 (F4): the OPEN set joins the cross-round ledger restatement
+  // the OPEN set joins the cross-round ledger restatement
   // (open-family ids carried from previous rounds) with the new `## Issues`
   // rows — sliding only over `## Issues` would mis-count a carried blocker as
   // "new" progress even though the debt never moved.
@@ -856,18 +856,31 @@ async function noteDesignReviewNoProgress(
   const graceUsed = activeCtx !== null
     ? (readNoProgressGraceUsed(ctx.config.projectRoot, docKey) ?? 0)
     : 0;
-  // 229 (F4 宽限): ONE observation round is granted for the FIRST flat round
+  // ONE observation round is granted for the FIRST flat round
   // (`streak 1`); the SECOND consecutive flat round freezes regardless
   // (`streak 2 > 0`). With the grace already consumed, grace = 0.
   const effectiveGrace = graceUsed >= 1 ? 0 : 1;
 
-  const evaluation = evaluateNoProgress(drState.progressLedger, {
+  const prevLedger = drState.progressLedger;
+  const evaluation = evaluateNoProgress(prevLedger, {
     loop: "designReview" as const,
     openIds,
     severityCounts: counts,
   }, effectiveGrace);
+  // the mismatch must be read from the PREVIOUS ledger BEFORE
+  // the new snapshot is installed — once overwritten, the comparison is dead
+  // code (`loop` is always designReview on the fresh entry).
+  if (prevLedger !== undefined && prevLedger.loop !== "designReview") {
+    await safeWriteAuditLog("design_review_coordinator", {
+      action: "no_progress_loop_mismatch",
+      pipelineId: meta.pipelineId,
+      stage: "design-review",
+      round: String(drState.round),
+      previousLoop: String(prevLedger.loop),
+    }, "info");
+  }
 
-  // 229 Phase 3: write the ledger INTO THE PRE-COMMIT state snapshot — the
+  // write the ledger INTO THE PRE-COMMIT state snapshot — the
   // transition commits build their `designReview` from THIS object, so the
   // accounting rides every strict commit (a parallel updateMeta write would
   // be clobbered by the very next state commit).
@@ -893,17 +906,6 @@ async function noteDesignReviewNoProgress(
       streak: String(evaluation.streak),
     });
     return { status: "handled", action: "frozen", reason: "no_progress_detected" };
-  }
-  if (drState.progressLedger !== undefined && drState.progressLedger.loop !== "designReview") {
-    // 229 (问题 20): a mismatched loop identity reads as progress upstream —
-    // audited once here for traceability.
-    await safeWriteAuditLog("design_review_coordinator", {
-      action: "no_progress_loop_mismatch",
-      pipelineId: meta.pipelineId,
-      stage: "design-review",
-      round: String(drState.round),
-      previousLoop: String(drState.progressLedger.loop),
-    }, "info");
   }
   return undefined;
 }
@@ -1351,7 +1353,7 @@ async function handleFail(
     : extractReportIssues(reportPath);
   const issueIds = verifiedIssues
     ? verifiedIssues.map((i) => i.issueId)
-    // 229 Phase 1 (B18): legacy fallback (no verified domain outcome) maps the
+    // legacy fallback (no verified domain outcome) maps the
     // re-extracted issues to the round's STABLE ids by section order.
     : issues.map((_issue, idx) => `DR-${drState.round}-${idx + 1}`);
 
@@ -1445,7 +1447,7 @@ async function handleFail(
       recordedAt: Date.now(),
     },
     reviewInputReceipt: inputReceipt,
-    // 229 Phase 3 (F3/B15): the preparation-time section-hash baseline rides
+    // the preparation-time section-hash baseline rides
     // in the SAME strict commit (it describes the PRE-update plan bytes).
     updateBaselineSectionHashes: prepared.candidate.baselineSectionHashes,
     updatedAt: Date.now(),
@@ -2481,8 +2483,15 @@ async function handleUpdateReady(
   // Extract issues from report
   const reportPath = drState.reviewInputReceipt?.reportDoc ?? deriveReportPath(drState.planDoc, drState.round);
   const issues = extractReportIssues(reportPath);
-  // 229 Phase 1 (B18): legacy re-extraction maps to the round's STABLE ids.
-  const issueIds = issues.map((_issue, idx) => `DR-${drState.round}-${idx + 1}`);
+  // Stable ids: the CONSUMED receipt already pinned them at review time, so a
+  // recovered `update_ready` must reuse THOSE ids (a report that keeps `DR-1-1`
+  // in round 2 would otherwise be renumbered by position and the per-issue
+  // binding would name a different issue). Only a legacy state without a
+  // receipt falls back to the round's positional ids.
+  const receiptIssueIds = drState.reviewInputReceipt?.issueIds;
+  const issueIds = receiptIssueIds !== undefined && receiptIssueIds.length === issues.length
+    ? [...receiptIssueIds]
+    : issues.map((_issue, idx) => `DR-${drState.round}-${idx + 1}`);
   const reportHash = drState.reviewInputReceipt?.reportHash ?? "";
 
   // Fresh visit = the CURRENT plan-stage visit (never a stale review stamp).
@@ -2521,7 +2530,7 @@ async function handleUpdateReady(
   const preparedOp = prepared.candidate.operation;
   const updatePrompt = prepared.candidate.prompt;
 
-  // Commit operation (this also transitions to update_running). 229 Phase 3:
+  // Commit operation (this also transitions to update_running). 
   // the preparation-time section-hash baseline rides in the SAME commit.
   const committedState = commitDesignReviewOperation(
     ctx.session,
@@ -2764,7 +2773,7 @@ async function handleUpdateRunning(
   // One consistent target state: next round, new plan hash, new report doc,
   // review_running with the fresh operation. The consumed update operation is
   // replaced; its terminal fact is the plan change (newPlanHash) itself.
-  // 229 Phase 3 (B14): the mechanically-verified declared scope rides in the
+  // the mechanically-verified declared scope rides in the
   // SAME strict commit (`lastDeclaredScope`) — the next review round's
   // findings directive renders from it; a failed validation never writes it.
   const stateWithOperation: DesignReviewState = {
@@ -3418,10 +3427,10 @@ async function spawnDesignReviewAgent(
   // auto job ⇒ `finalPrompt` is byte-identical to the pre-220 prompt (INV-1).
   const { resolveAutoLedgerGuidance } = await import("../auto-pipeline/design-review-ledger-inject");
   const ledgerGuidance = await resolveAutoLedgerGuidance({ config: ctx.config, planDoc: drState.planDoc });
-  // 229 Phase 2 (F2/B8): cross-round findings directive — REVIEW dispatches
+  // cross-round findings directive — REVIEW dispatches
   // ONLY (update/develop-handoff prompts are never polluted, B8). B6: applied
   // identically on both tracks. Fixed order: task.prompt → findings directive
-  // (229 Phase 7 appends the legacy-criteria patch after it) → ledger guidance.
+  // (appends the legacy-criteria patch after it) → ledger guidance.
   let findingsDirective: string | undefined;
   if (operation.kind === "review") {    const { resolvePreviousOpenFindings, renderReviewFindingsDirective, declaredScopeOf } =
       await import("../auto-pipeline/review-findings-directive");
@@ -3461,7 +3470,7 @@ async function spawnDesignReviewAgent(
         ) ?? undefined;
     }
   }
-  // 229 Phase 7 (F7/task 3): the LEGACY-CRITERIA compat patch for UNMIGRATED
+  // the LEGACY-CRITERIA compat patch for UNMIGRATED
   // projects (review dispatches only). Fixed order: task.prompt → findings
   // directive → criteria patch. Migrated assets ⇒ null (no extra bytes).
   let criteriaPatch: string | undefined;
@@ -3477,7 +3486,7 @@ async function spawnDesignReviewAgent(
     task.prompt,
     ...(findingsDirective !== undefined ? ["", findingsDirective] : []),
     ...(criteriaPatch !== undefined ? ["", criteriaPatch] : []),
-    // 229 Phase 6 (F6/问题 19 / B8): carry-over VISIBILITY on the develop
+    // carry-over VISIBILITY on the develop
     // handoff ONLY — mutually exclusive with the review findings directive
     // (B8). Zero bytes when no loop-exit record exists (prompt unchanged).
     ...(operation.kind === "develop-handoff"
@@ -3539,7 +3548,7 @@ async function spawnDesignReviewAgent(
 }
 
 /**
- * 229 Phase 6 (F6/问题 19/B8): the develop-handoff carry-over summary — the
+ * the develop-handoff carry-over summary — the
  * loop-exit degraded-pass record made VISIBLE downstream. `null` when no
  * `loop-exit` record exists (the develop prompt stays byte-identical), and
  * mutually exclusive with the review findings directive (B8).

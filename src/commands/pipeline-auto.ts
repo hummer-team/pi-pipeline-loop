@@ -889,7 +889,7 @@ async function startPendingDoc(input: {
 
   // M2: written AFTER startNewPipeline — buildStartMeta's updateMeta(newMeta)
   // would otherwise erase it.
-  // 229 Phase 4 (B10/R1-Q5 C): the design-review round budget is INHERITED
+  // the design-review round budget is INHERITED
   // from the sidecar of the SAME doc (sidecar lifetime = budget lifetime in
   // the one auto job; a new job starts a fresh sidecar ⇒ a fresh budget).
   const inheritedDocKey =
@@ -964,7 +964,7 @@ async function startPendingDoc(input: {
   clearPendingContinuation(state);
   await writeJobState(projectRoot, state);
 
-  // 223 Phase 2: the document already carried `## 模型确认`, so the clarify
+  // 223 Phase 2: the document already carried a model-confirmation marker, so the clarify
   // executor was NOT spawned — the advance was deferred until the autoJob
   // contract (above) holds. Now run it in this same command round.
   let advanceSuffix = "";

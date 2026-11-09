@@ -66,12 +66,12 @@ export type ClarifyOnExhausted = "stop" | "self-confirm";
 /** What a design-review FAIL is routed to (renamed from `failAction`). */
 export type DesignReviewOnFail = "auto-revise" | "stop";
 
-/** 229 (F5/B16): what loop-budget/NO-PROGRESS exhaustion degrades to.
+/** what loop-budget/NO-PROGRESS exhaustion degrades to.
  * `undefined` KEPT — an absent value means "loop default" (`advance` on the
  * consumption side) so a legacy job's behaviour is never silently changed. */
 export type DesignReviewOnExhausted = "advance" | "await-human" | "stop";
 
-/** 229 (B3): the exit target of an `advance` exhaustion release. */
+/** the exit target of an `advance` exhaustion release. */
 export type ExhaustedAdvanceTarget = "nextStage" | "awaiting_human";
 
 /** Whether an auto job may let the agent run git state-changing commands. */
@@ -96,14 +96,14 @@ export interface AutoJobConfig {
   designReview: { enabled?: boolean; mode?: ConfirmMode; maxRounds: number; onFail: DesignReviewOnFail };
   reviewFix: { maxRounds: number; maxLoopsPerStage: number };
   /**
-   * 229 (F5/B16): loop-exhaustion exits. KEPT `undefined` when not configured
+   * loop-exhaustion exits. KEPT `undefined` when not configured
    * (consumers resolve `?? "advance"`); only these two loop keys exist in v1.
    */
   onExhausted?: {
     designReview?: DesignReviewOnExhausted;
     reviewFix?: DesignReviewOnExhausted;
   };
-  /** 229 (B3): per-loop advance target; default `nextStage` (the loop exit). */
+  /** per-loop advance target; default `nextStage` (the loop exit). */
   onExhaustedTarget?: {
     designReview?: ExhaustedAdvanceTarget;
     reviewFix?: ExhaustedAdvanceTarget;
@@ -716,7 +716,7 @@ export function parseAutoJob(yamlText: string, sourcePath: string): AutoJobParse
     warnings.push('"reviewFix" not set — using default { maxRounds: 6, maxLoopsPerStage: 6 }');
   }
 
-  // 229 (F5/B16) top-level onExhausted / onExhaustedTarget — loop policies
+  // (F5/B16) top-level onExhausted / onExhaustedTarget — loop policies
   // KEPT `undefined` when not configured (a legacy job behaves exactly as
   // before; the consumption resolves the loop default `advance` itself).
   let onExhausted: AutoJobConfig["onExhausted"] | undefined;
@@ -738,7 +738,7 @@ export function parseAutoJob(yamlText: string, sourcePath: string): AutoJobParse
     warnings.push('"onExhausted" not set — loop default advance applies (B16; legacy runs untouched)');
   }
 
-    let onExhaustedTarget: AutoJobConfig["onExhaustedTarget"] | undefined;
+  let onExhaustedTarget: AutoJobConfig["onExhaustedTarget"] | undefined;
   const onExhaustedTargetRaw = asObject(root.onExhaustedTarget);
   if (onExhaustedTargetRaw) {
     rejectUnknownKeys(onExhaustedTargetRaw, ["designReview", "reviewFix"], "onExhaustedTarget.", errors);
@@ -747,7 +747,7 @@ export function parseAutoJob(yamlText: string, sourcePath: string): AutoJobParse
       const value = onExhaustedTargetRaw[key];
       if (value === undefined) continue;
       if (value === "nextStage" || value === "awaiting_human") {
-        if (onExhausted !== undefined && onExhausted[key] === "advance") {
+        if (value === "awaiting_human" && onExhausted?.[key] === "advance") {
           warnings.push(`"onExhaustedTarget.${key}=awaiting_human" degrades advance to await-human`);
         }
         parsed[key] = value;
@@ -847,6 +847,7 @@ export function parseAutoJob(yamlText: string, sourcePath: string): AutoJobParse
   // Unknown top-level keys → warning (known-but-removed keys error above).
   const KNOWN_KEYS = new Set([
     "version", "enabled", "tier", "docs", "clarify", "confirm", "designReview", "reviewFix",
+    "onExhausted", "onExhaustedTarget",
     "verify", "writePolicy", "freezePolicy", "stopConditions", "defaults", "chain", "audit", "_comment",
   ]);
   for (const key of Object.keys(root)) {

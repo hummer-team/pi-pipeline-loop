@@ -46,20 +46,20 @@ export interface ResolvedFreezeAction {
   action: FreezeAction | "advance";
   /** `by_reason` | `on_exhausted` | `on_freeze` | `max_auto_resumes` — diagnostics/audit only. */
   basis: string;
-  /** 229 (F5/B3): the resolved exhaustion loop + target for an advance. */
+  /** the resolved exhaustion loop + target for an advance. */
   loop?: ExhaustionLoop;
   target?: ExhaustionTarget;
-  /** 229 (F5): `"await-human"` keeps the frozen pipeline with an audit only. */
+  /** `"await-human"` keeps the frozen pipeline with an audit only. */
   mode?: "await-human";
 }
 
 /**
  * Resolve the auto action for one freeze reason (pure).
  *
- * 229 (B16) precedence: `byReason[reason]` → an EXPLICIT loop
+ * (B16) precedence: `byReason[reason]` → an EXPLICIT loop
  * `onExhausted[loop]` → `onFreeze` → the loop-default `advance` →
- * `"stop-and-report"`. ONLY the 229 exhaustion-reason family may take the
- * loop exits; an inherited `onFreeze` beats the loop default (问题 17), so a
+ * `"stop-and-report"`. ONLY the exhaustion-reason family may take the
+ * loop exits; an inherited `onFreeze` beats the loop default, so a
  * legacy job's behaviour is never silently changed. A `resume` is downgraded
  * to `"stop-and-report"` once `maxAutoResumes` is used up (cross-doc counter
  * lives in the sidecar).
@@ -84,7 +84,7 @@ export function resolveFreezeAction(input: {
     return { action: explicit, basis: "by_reason" };
   }
 
-  // 229 exhaustion family — loop identity first (问题 2).
+  // exhaustion family — loop identity first.
   if (EXHAUSTION_REASONS.has(reason) && config !== undefined) {
     const loop = resolveExhaustionLoop({ meta, job, reason, config });
     if (loop !== null) {
@@ -93,7 +93,7 @@ export function resolveFreezeAction(input: {
         ? job.onExhaustedTarget?.designReview ?? "nextStage"
         : job.onExhaustedTarget?.reviewFix ?? "nextStage";
       if (configured === undefined) {
-        // Loop DEFAULT advance (B16): the legacy onFreeze beats it (问题 17).
+        // Loop DEFAULT advance (B16): the legacy onFreeze beats it.
         const onFreeze = job.freezePolicy?.onFreeze ?? "stop-and-report";
         if (onFreeze !== undefined && onFreeze !== "resume") {
           if (onFreeze === "advance") return { action: "advance", basis: "on_freeze" };
@@ -112,7 +112,7 @@ export function resolveFreezeAction(input: {
           return { action: "stop-and-report", basis: "on_exhausted" };
         }
       }
-      // 229 (F5/B3): resolve the TARGET at routing time (the topology check
+      // resolve the TARGET at routing time (the topology check
       // runs in the advance arm where a loop-back keeps the freeze).
       const resolvedTarget = resolveExhaustionTarget({
         loop,
@@ -219,7 +219,10 @@ export async function runFreezeAutopilot(
   // A finished/stopped job never answers freezes (its finalize path owns them).
   if (state.status !== "running") return null;
 
-  const resolved = resolveFreezeAction({ meta, job, state, reason });
+  // the LIVE config is mandatory here — every exhaustion route is
+  // gated on `config !== undefined`, so omitting it would silently degrade every
+  // `advance` into the legacy `onFreeze ?? "stop-and-report"` fallback.
+  const resolved = resolveFreezeAction({ meta, job, state, reason, config });
 
   // Single write point for BOTH counters (plan Phase 3 §6): totalFreezes always,
   // autoResumes only when a resume is actually granted.
@@ -246,10 +249,10 @@ export async function runFreezeAutopilot(
     basis: resolved.basis,
   });
 
-  if (resolved.action === "advance" && resolved.loop !== undefined && config !== undefined) {
-    // 229 (F5): the loop-exhaustion advance arm. `await-human` keeps the
+  if (resolved.action === "advance" && resolved.loop !== undefined) {
+    // the loop-exhaustion advance arm. `await-human` keeps the
     // pipeline frozen (audit only); a normal advance resolves the target
-    // (B3) INCLUDING the runtime topology check and then executes the 229
+    // (B3) INCLUDING the runtime topology check and then executes the
     // `advance` decision. A failure leaves ZERO new evidence — the pipeline
     // stays frozen for the operator.
     if (resolved.mode !== "await-human") {

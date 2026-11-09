@@ -205,10 +205,12 @@ describe("229 Phase 6: degraded-pass helpers", () => {
     expect(isDegradedPassBound(meta, record({ pipelineId: "p2" }))).toBe(false);
   });
 
-  it("isDegradedPassDuplicate matches the (pipelineId, round, reason, at) stamp", () => {
+  it("isDegradedPassDuplicate matches on (pipelineId, round, reason) and ignores `at`", () => {
     const a = record({ pipelineId: "p" });
-    const same = record({ pipelineId: "p" });
+    const same = record({ pipelineId: "p", at: 1_700_000_999_999 });
     expect(isDegradedPassDuplicate(a, same)).toBe(true);
+    expect(isDegradedPassDuplicate(a, record({ pipelineId: "p", round: 3 }))).toBe(false);
+    expect(isDegradedPassDuplicate(a, record({ pipelineId: "p", reason: "max_loop_cycles" }))).toBe(false);
   });
 
   it("buildDegradedPassFromReviewLedger: blockers > 0 ⇒ refusal; zero-blocking maps accepted-risk", () => {

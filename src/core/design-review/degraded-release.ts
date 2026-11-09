@@ -1,6 +1,6 @@
 /**
  * @module design-review/degraded-release
- * 229 Phase 5 (F5/B2 path A / B5 / B12 / issues 3, 15, 20): the design-review
+ * the design-review
  * loop-exhaustion release. ONLY a commit — the dispatch of the fresh develop
  * visit is performed by the `flow-state` side (`invokeResumeDispatch`), so no
  * `flow-state ↔ degraded-release` import cycle exists.
@@ -9,7 +9,7 @@
  * - Open issues / severities come from `designReview.progressLedger`; when a
  *   ledger is missing, the review receipt's issue ids + the previous round's
  *   report supply the severities; when BOTH are unavailable the release is
- *   REFUSED (`degraded_release_unbound`, 问题 15 fail-closed).
+ *   REFUSED (`degraded_release_unbound`, fail-closed).
  * - The degraded-pass approval is ALWAYS recorded (also for an
  *   `awaiting_human` target — evidence ② can stand later); the `loop-exit`
  *   `degradedPass` record is written ONLY when the target is not
@@ -23,6 +23,7 @@ import type {
   DegradedPassReason,
   DesignReviewIssueRecord,
   DesignReviewState,
+  IssueSeverity,
   PipelineStage,
   PipelineConfig,
   SessionMeta,
@@ -32,10 +33,7 @@ import { recordStageVisit } from "../../utils/stage-visit";
 import { effectiveMax } from "../../utils/stage-visit";
 import { strictCommitMeta, type MetaCommitExpectation } from "../session-state";
 import { buildForwardStagePatch } from "../stage-migration";
-import {
-  computeReportHash,
-  extractDesignReviewIssueItems,
-} from "../verifiers/design-review-verifier";
+import { computeReportHash } from "../verifiers/design-review-verifier";
 import {
   DEFAULT_ISSUE_HEADING_PATTERN,
   compileHeadingRe,
@@ -65,14 +63,35 @@ export type DegradedReleaseResult =
   | { ok: true; freshMeta: SessionMeta }
   | { ok: false; code: "degraded_release_unbound" | "release_commit_failed"; detail: string };
 
-/** Read the ledger open set, or repair severities from the receipt+report. */
+/**
+ * resolve the carried open set.
+ *
+ * Precedence: the design-review progress ledger (the authoritative cross-round
+ * view) → the review receipt's stable ids repaired with the previous round's
+ * report severities → REFUSED (`bound: false`). The ledger path must project
+ * the REAL records: an empty projection would silently drop every carry-over
+ * and make the loop-exit `degradedPass` (and its downstream visibility)
+ * unreachable.
+ */
 function resolveOpenIssues(
   drState: DesignReviewState,
   reportPath: string,
 ): { records: DesignReviewIssueRecord[]; bound: boolean } {
   const ledger = drState.progressLedger;
   if (ledger !== undefined) {
-    return { records: [], bound: true };
+    // Severities come from the ledger's per-issue map; the ledger itself never
+    // fabricates one (missing severity stays missing — see `prepareDegradedRelease`).
+    const records: DesignReviewIssueRecord[] = ledger.openIds.map((id) => {
+      const severity = ledger.severityById?.[id];
+      return {
+        id,
+        origin: String(ledger.round),
+        status: "carry-over" as const,
+        ...(severity !== undefined ? { severity } : {}),
+        text: "unresolved carried issue",
+      };
+    });
+    return { records, bound: true };
   }
   const issueIds = drState.reviewInputReceipt?.issueIds;
   if (issueIds === undefined || issueIds.length === 0) {
@@ -98,7 +117,7 @@ function resolveOpenIssues(
 }
 
 /**
- * The 229 degraded release for the design-review loop. Returns `ok:false`
+ * The degraded release for the design-review loop. Returns `ok:false`
  * WITH the caller keeping the freeze when the open set is unbound or the
  * strict commit conflicts — ZERO state changes in every failure path.
  */
@@ -107,7 +126,7 @@ export async function prepareDegradedRelease(
 ): Promise<DegradedReleaseResult> {
   const { session, config, meta, drState, reason, targetStage } = input;
 
-  // ── Open-set resolution (问题 15, fail-closed) ────────────────────────────
+  // ── Open-set resolution (fail-closed) ─────────────────────────────────────
   const reportPath = drState.reviewInputReceipt?.reportDoc ?? deriveReportPath(drState.planDoc, drState.round - 1);
   const resolved = resolveOpenIssues(drState, reportPath);
   if (!resolved.bound) {
@@ -118,18 +137,14 @@ export async function prepareDegradedRelease(
     }, "warn");
     return { ok: false, code: "degraded_release_unbound", detail: "no progress ledger and no review receipt to bind the carried issues" };
   }
-  const severityById: Record<string, string> = {};
-  for (const r of resolved.records) {
-    if (r.severity !== undefined) severityById[r.id] = r.severity;
-  }
-  const severityCounts: Partial<Record<"Blocker" | "High" | "Medium" | "Low", number>> = {};
+  const severityCounts: Partial<Record<IssueSeverity, number>> = {};
   for (const r of resolved.records) {
     if (r.severity !== undefined) {
       severityCounts[r.severity] = (severityCounts[r.severity] ?? 0) + 1;
     }
   }
 
-  // ── Approval identity (fail-closed on missing identity, 问题 20) ──────────
+  // ── Approval identity (fail-closed on missing identity) ───────────────────
   const reviewOperationId = drState.operation?.operationId;
   if (reviewOperationId === undefined) {
     await safeWriteAuditLog("degraded_release_unbound", {
@@ -160,11 +175,31 @@ export async function prepareDegradedRelease(
 
   const openIssueIds = drState.progressLedger?.openIds ?? resolved.records.map((r) => r.id);
   const at = Date.now();
+  // a severity MUST be parseable — a missing one is never
+  // fabricated as `Medium` (that would understate the real risk in the
+  // accepted-risk/carry-over distribution). Fail-closed instead.
+  const missingSeverity = resolved.records.filter(
+    (r) => openIssueIds.includes(r.id) && r.severity === undefined,
+  );
+  if (missingSeverity.length > 0) {
+    await safeWriteAuditLog("degraded_release_unbound", {
+      pipelineId: meta.pipelineId,
+      stage: "design-review",
+      round: String(drState.round),
+      reason: "severity_missing",
+      issueIds: missingSeverity.map((r) => r.id).join(","),
+    }, "warn");
+    return {
+      ok: false,
+      code: "degraded_release_unbound",
+      detail: `no parseable severity for carried issues: ${missingSeverity.map((r) => r.id).join(", ")}`,
+    };
+  }
   const degradedPassIssueList: DegradedPassIssue[] = resolved.records
-    .filter((r) => openIssueIds.includes(r.id))
+    .filter((r) => openIssueIds.includes(r.id) && r.severity !== undefined)
     .map((r) => ({
       id: r.id,
-      ...(r.severity !== undefined ? { severity: r.severity } : { severity: "Medium" as const }),
+      severity: r.severity as IssueSeverity,
       status: "carry-over" as const,
     }));
 
@@ -190,7 +225,6 @@ export async function prepareDegradedRelease(
   const isAwaitTarget = targetStage === "awaiting_human";
   const visitResult = recordStageVisit(meta, isAwaitTarget ? "awaiting_human" : (targetStage as PipelineStage), effectiveMax(meta, config), config);
   if (!visitResult.ok) {
-    ctx_sessionNoop(session);
     await safeWriteAuditLog("release_visit_budget_exhausted", {
       pipelineId: meta.pipelineId,
       stage: "design-review",
@@ -209,9 +243,6 @@ export async function prepareDegradedRelease(
       ...(meta.exhaustedLoops ?? []),
       { loop: "designReview" as const, reason: reason as DegradedPassReason, at },
     ],
-    ...(meta.autoJob !== undefined
-      ? {}
-      : {}),
     ...(degradedPassIssueList.length > 0 && !isAwaitTarget
       ? {
           degradedPass: {
@@ -251,8 +282,4 @@ export async function prepareDegradedRelease(
   });
   const freshMeta = (session.getMeta() as SessionMeta | undefined) ?? meta;
   return { ok: true, freshMeta };
-}
-
-function ctx_sessionNoop(session: unknown): void {
-  void session;
 }

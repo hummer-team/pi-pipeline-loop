@@ -4,7 +4,7 @@
  * the `update_ready` dispatch and later recovery, so a plan revision can never
  * be dispatched from a half-built contract.
  *
- * Ordering is the whole point (acceptance: "配置错零RPC/零visit"):
+ * Ordering is the whole point (acceptance: a misconfigured run performs zero RPC and zero visits):
  *   1. read the baseline plan bytes (needed to pin the C1 digest);
  *   2. build the candidate operation and PIN its standalone output descriptor
  *      (plugin-derived receipt path + baseline sections digest) — never model
@@ -58,7 +58,7 @@ export interface UpdateDispatchCandidate {
   /** Input hash bound to the candidate (baseline plan + report + issue ids). */
   inputHash: string;
   /**
-   * 229 Phase 3 (F3/B15): hashes of ALL top-level `##` sections of the plan
+   * hashes of ALL top-level `##` sections of the plan
    * AS READ AT PREPARATION TIME (pre-update). The coordinator commits it as
    * `designReview.updateBaselineSectionHashes` in the SAME strict commit as
    * the operation; the update verifier consumes it for the mechanical
@@ -135,7 +135,7 @@ async function pinUpdateCandidate(
     return { ok: false, reason: "operation_creation_failed", detail: "prepareDesignReviewOperation returned undefined" };
   }
 
-  // 229 Phase 3 (F3/B15): the mechanical scope baseline is derived from the
+  // the mechanical scope baseline is derived from the
   // SAME plan bytes this preparation read (pre-update state) and travels on
   // the candidate so the coordinator can commit it with the operation.
   const baselineSectionHashes = computeSectionHashes(planContent);

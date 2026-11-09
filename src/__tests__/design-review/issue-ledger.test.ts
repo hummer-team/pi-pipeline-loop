@@ -273,11 +273,24 @@ describe("229 Phase 0: evaluateNoProgress (F4)", () => {
     expect(evaluateNoProgress(snap(["a"], 0), snap(["a", "b"]), 2).verdict).toBe("no-progress");
   });
 
-  it("equal count with CHANGED ids counts as progress (the loop moved, 229 Phase 4)", () => {
+  it("equal count with REPLACED ids is NOT progress (one blocker swapped for another, R3-Q4 B)", () => {
+    // The debt did not shrink: `a` was resolved but `c` replaced it, so the
+    // open set is neither a proper subset nor smaller — the streak extends.
     expect(evaluateNoProgress(snap(["a", "b"], 0), snap(["b", "c"]), 2)).toEqual({
+      verdict: "no-progress",
+      streak: 1,
+    });
+  });
+
+  it("a proper SUBSET is progress even when the count drops", () => {
+    expect(evaluateNoProgress(snap(["a", "b", "c"], 0), snap(["a", "b"]), 2)).toEqual({
       verdict: "progress",
       streak: 0,
     });
+  });
+
+  it("same count replaced AND grown is never progress", () => {
+    expect(evaluateNoProgress(snap(["a"], 0), snap(["b", "c"]), 2).verdict).toBe("no-progress");
   });
 
   it("equal count with the IDENTICAL id set stays a flat repetition", () => {

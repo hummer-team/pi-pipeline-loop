@@ -36,7 +36,7 @@ export type HardStopVerdict =
   /**
    * 226 Phase 3 (review 8f): optional cause detail — the concrete freeze
    * reason (`blockedReason`) behind `freeze_unresolvable`, so the DOC-level
-   * `failReason` can carry `freeze_unresolvable(<原因>)`. The JOB-level
+   * `failReason` can carry `freeze_unresolvable(<reason>)`. The JOB-level
    * `stopReason` stays clean (`freeze_unresolvable`), no new stop reason.
    */
   | { kind: "hard"; stopReason: AutoJobStopReason; detail?: string };
@@ -64,7 +64,7 @@ export function resolveVerifyMaxAttempts(
 
 /**
  * Hard stop — callable from settle AND from freeze handling. Order matters:
- * the concrete/现场 cause (unresolvable freeze) is reported before the
+ * the concrete on-site cause (unresolvable freeze) is reported before the
  * historical budget (`maxTotalFreezes`).
  */
 export function evaluateHardStop(input: {
@@ -79,7 +79,7 @@ export function evaluateHardStop(input: {
    */
   verifyMaxAttempts?: number;
   /**
-   * 229 (F5/B16): the live pipeline config lets the hard-stop predicate share
+   * the live pipeline config lets the hard-stop predicate share
    * the loop-exhaustion resolution — a freeze that the loop policy can
    * ADVANCE past is NOT unresolvable, so it must not hard-stop the doc
    * before the freeze-autopilot runs.
@@ -160,7 +160,7 @@ export type AutoAwareVisitResult =
  * no `pipeline_auto_stop`/summary was produced, and the very same doc could
  * still land a SECOND `:completed` receipt later (the brake refuses to advance,
  * so the agent may finish the file anyway). `stopConditions.maxTotalLoops`
- * (decision 14, "完成机会" budget) was therefore almost inert at run time.
+ * (decision 14, the "completion chance" budget) was therefore almost inert at run time.
  *
  * Phase 5 §4 makes `handleDocFailure` the ONE failure-scheduling implementation
  * (receipt → hard stop → `onFailure` stop → `onFailure` continue). A soft stop

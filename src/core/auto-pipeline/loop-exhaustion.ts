@@ -1,9 +1,9 @@
 /**
  * @module auto-pipeline/loop-exhaustion
- * 229 Phase 5 (F5/B3/B16): loop-FIRST exhaustion routing — PURE policy.
+ * loop-FIRST exhaustion routing — PURE policy.
  *
  * Facts (boundaries):
- * - Loop identity WINS over any stage guess (问题 2): a `no_progress_detected`
+ * - Loop identity WINS over any stage guess: a `no_progress_detected`
  *   freeze raised by the review/fix loop must never be routed into the
  *   design-review loop and vice versa. `design_review_budget_exhausted` only
  *   routes when the design-review domain is ACTIVE; unknown reasons route
@@ -26,7 +26,7 @@ export type ExhaustionLoop = "designReview" | "reviewFix";
 /** A resolved-exhaustion target: a pipeline stage or the parking stage. */
 export type ExhaustionTarget = PipelineStage | "awaiting_human";
 
-/** The machine reasons that authorize the 229 exhaustion exit. */
+/** The machine reasons that authorize the exhaustion exit. */
 export const EXHAUSTION_REASONS = new Set<string>([
   "no_progress_detected",
   "design_review_budget_exhausted",
@@ -34,13 +34,25 @@ export const EXHAUSTION_REASONS = new Set<string>([
   "review_loop_budget_exhausted",
 ]);
 
-/** Reason → degraded-pass reason mapping (问题 19: max_loop_cycles family). */
+/** Reason → degraded-pass reason mapping (`max_loop_cycles` family). */
 export const EXHAUSTION_REASON_TO_DEGRADED_REASON: Record<string, string> = {
   max_loop_cycles: "review_loop_budget_exhausted",
   review_loop_budget_exhausted: "review_loop_budget_exhausted",
   no_progress_detected: "no_progress_detected",
   design_review_budget_exhausted: "design_review_budget_exhausted",
 };
+
+/**
+ * Reasons that mean a LOOP BUDGET (rounds/cycles) ran out. They share the
+ * `loop_budget_exhausted` audit record (loop / round / maxRounds / reason) at
+ * the freeze boundary; `no_progress_detected` is NOT a budget reason and keeps
+ * its own audit.
+ */
+export const LOOP_BUDGET_REASONS = new Set<string>([
+  "design_review_budget_exhausted",
+  "review_loop_budget_exhausted",
+  "max_loop_cycles",
+]);
 
 /** True when the design-review domain currently holds an ACTIVE loop. */
 export function isDesignReviewDomainActive(meta: SessionMeta): boolean {
@@ -57,7 +69,7 @@ export function isReviewFixStage(meta: SessionMeta): boolean {
 }
 
 /**
- * Loop-FIRST routing for an exhausted loop (问题 2). Returns the loop the
+ * Loop-FIRST routing for an exhausted loop. Returns the loop the
  * reason belongs to, or `null` when the reason must NOT take the exhaustion
  * exit (falls back to `byReason`/`onFreeze` semantics).
  */
@@ -68,34 +80,8 @@ export function resolveExhaustionLoop(input: {
   config: PipelineConfig;
 }): ExhaustionLoop | null {
   void input.config;
-  const { meta, job, reason } = input;
-  if (!EXHAUSTION_REASONS.has(reason)) return null;
-
-  switch (reason) {
-    case "no_progress_detected": {
-      // Loop identity first: the review/fix ledger NEVER routes here from the
-      // design-review domain.
-      if (meta.reviewLedger?.loop === "reviewFix" || isReviewFixStage(meta)) {
-        return "reviewFix";
-      }
-      if (isDesignReviewDomainActive(meta)) {
-        return "designReview";
-      }
-      return null;
-    }
-    case "design_review_budget_exhausted": {
-      if (!isDesignReviewDomainActive(meta)) return null;
-      return "designReview";
-    }
-    case "max_loop_cycles":
-    case "review_loop_budget_exhausted": {
-      if (isReviewFixStage(meta)) return "reviewFix";
-      if (isDesignReviewDomainActive(meta)) return "designReview";
-      return null;
-    }
-    default:
-      return null;
-  }
+  void input.job;
+  return resolveLoopOwnership(input.meta, input.reason);
 }
 
 /**
@@ -151,18 +137,49 @@ export function resolveExhaustionTarget(input: {
 }
 
 /**
+ * Loop ownership for a frozen reason WITHOUT requiring a live job/config —
+ * the identity-only projection of {@link resolveExhaustionLoop}.
+ *
+ * Used by the decision executor where a job may be absent (human track): the
+ * review/fix loop is identified by its LEDGER identity or the current stage,
+ * the design-review loop by its ACTIVE domain. `null` when neither owns the
+ * reason (the caller then keeps its previous default).
+ */
+export function resolveLoopOwnership(
+  meta: SessionMeta,
+  reason: string,
+): ExhaustionLoop | null {
+  if (!EXHAUSTION_REASONS.has(reason)) return null;
+  switch (reason) {
+    case "design_review_budget_exhausted":
+      return isDesignReviewDomainActive(meta) ? "designReview" : null;
+    case "no_progress_detected":
+    case "max_loop_cycles":
+    case "review_loop_budget_exhausted": {
+      if (meta.reviewLedger?.loop === "reviewFix" || isReviewFixStage(meta)) return "reviewFix";
+      if (isDesignReviewDomainActive(meta)) return "designReview";
+      return null;
+    }
+    default:
+      return null;
+  }
+}
+
+/**
  * The CREATIVE override the decision menu resolves (B16): `?? advance`.
+ * An explicit `await-human` keeps the pipeline parked; `stop` is consumed by
+ * the routing arm upstream. Returns `null` when the loop policy says `stop`
+ * (the caller must then keep the freeze and report, never advance).
  */
 export function resolveExhaustedAction(
   job: AutoJobConfig,
   loop: ExhaustionLoop,
-): "advance" | "await-human" {
+): "advance" | "await-human" | null {
   const configured = loop === "designReview" ? job.onExhausted?.designReview : job.onExhausted?.reviewFix;
-  const token = configured === undefined ? "advance" : configured;
-  if (token === "stop") return "advance"; // consumed upstream by the routing arm
-  if (token === "await-human") return "await-human";
-  // an explicit target of awaiting_human degrades an advance to await-human
-  const explicitTarget = loop === "designReview" ? job.onExhaustedTarget?.designReview : job.onExhaustedTarget?.reviewFix;
-  if (explicitTarget === "awaiting_human" && token === "advance") return "advance";
-  return "advance";
+  if (configured === "stop") return null;
+  if (configured === "await-human") return "await-human";
+  const explicitTarget = loop === "designReview"
+    ? job.onExhaustedTarget?.designReview
+    : job.onExhaustedTarget?.reviewFix;
+  return explicitTarget === "awaiting_human" ? "await-human" : "advance";
 }

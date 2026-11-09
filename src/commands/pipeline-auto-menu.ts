@@ -246,7 +246,7 @@ export function buildAutoJobMeta(input: {
   /** Phase 6 §3: the job's `stopConditions.maxTotalLoops` (remaining-budget display). */
   totalLoopsBudget?: number;
   /**
-   * 229 Phase 4 (B10/R1-Q5 C): the design-review round budget INHERITED from
+   * the design-review round budget INHERITED from
    * the SAME doc's sidecar counter (sidecar lifetime: re-runs continue, a
    * fresh job restarts the budget). Default 0 (fresh doc / human track).
    */

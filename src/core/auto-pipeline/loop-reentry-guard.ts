@@ -1,6 +1,6 @@
 /**
  * @module auto-pipeline/loop-reentry-guard
- * 229 Phase 5 (R5-Q2 A): the exhausted-loop re-entry BAN.
+ * the exhausted-loop re-entry BAN.
  *
  * Once a loop reason has been recorded in `meta.exhaustedLoops`, re-entering
  * that loop (design-review dispatch, review entry) is frozen with
@@ -34,7 +34,7 @@ export function isLoopReentryBlocked(meta: SessionMeta, loop: string): boolean {
 }
 
 /**
- * Freeze-on-re-entry (审计 `loop_reentry_blocked`). Returns true when the
+ * Freeze-on-re-entry (audits `loop_reentry_blocked`). Returns true when the
  * freeze was performed (the caller then aborts its own flow immediately).
  */
 export async function guardLoopReentry(

@@ -51,7 +51,7 @@ export interface CompletionGateInput {
   /** Runtime ctx (role evidence + child stop forwarding); omitted → owner. */
   runtimeCtx?: unknown;
   /**
-   * 229 Phase 6 (B1/F6): the sixth-evidence candidate built by the caller
+   * the sixth-evidence candidate built by the caller
    * (the advance branch). When present it may substitute evidence ①; on a
    * rejection the caller must NOT persist it (candidate evaluation only).
    */
@@ -99,7 +99,7 @@ export async function evaluateCompletionGate(
   const autoValidations: Array<{ stage: PipelineStage; previousStatus: SummaryMeta["status"]; entry: SummaryMeta }> = [];
 
   // ① — this round's review must be a REAL PASS.
-  // 229 Phase 6 (B1): a BOUND candidate `pendingDegradedPass` (scope
+  // a BOUND candidate `pendingDegradedPass` (scope
   // "completion", zero blocking) may substitute THIS evidence only; ② ③ ④ ⑤
   // and the four write points stay untouched (degraded release is not a
   // bypass). An unbound/ineligible record ⇒ degraded_pass_invalid.

@@ -1,12 +1,12 @@
 /**
  * @module design-review/criteria-patch
- * 229 Phase 7 (F7/阶段 3/task 3): the runtime LEGACY-CRITERIA patch for the
+ * the runtime LEGACY-CRITERIA patch for the
  * design-review reviewer — compatibility for UNMIGRATED projects.
  *
  * Facts:
  * - Sources = the reachable criterion texts: the stage agent file (when
  *   readable), the deployed `stage_deliverable_design-review` yml block and
- *   the dispatched task prompt. Any hit of the pre-229 verdict texts
+ *   the dispatched task prompt. Any hit of the pre-verdict texts
  *   (`ANY valid entry` / `ISSUES TAKE PRECEDENCE` /
  *   `severity labels are informational` / `regardless of severity` /
  *   `issues take precedence`) appends the blocking-set patch AFTER the
@@ -23,7 +23,7 @@ import type { PipelineConfig, SessionMeta } from "../../types";
 import { safeWriteAuditLog } from "../../utils/auditLog";
 import { docsDirsOf } from "../../docs-paths";
 
-/** Legacy verdict-criterion tokens the 229 verifier no longer enforces. */
+/** Legacy verdict-criterion tokens the verifier no longer enforces. */
 const LEGACY_CRITERIA_TOKENS: readonly RegExp[] = [
   /ANY\s+valid\s+entry/i,
   /ISSUES\s+TAKE\s+PRECEDENCE/i,
@@ -33,8 +33,7 @@ const LEGACY_CRITERIA_TOKENS: readonly RegExp[] = [
 ];
 
 /** The blocking-set patch (own text is token-free ⇒ idempotent). */
-  /** The blocking-set patch (own text is token-free ⇒ idempotent). */
-export const CRITERIA_PATCH_TEXT = `[auto-pipeline] 229 verdict-criteria correction (the assets above still describe the PRE-229 rule): the verdict is gated on the BLOCKING SET — the verdict is FAIL only when \`## Issues\` carries at least one BLOCKING issue (severity Blocker or High WITH Evidence); \`None\` or only Medium/Low entries means PASS. Every issue row requires a stable ID (\`DR-<round>-n\`) and a required severity; a Blocker/High without Evidence or a missing severity makes the report INVALID (never routed). Previous-round open ids must be restated in \`## Issue Ledger\` with a legal status or the report is invalid.`;
+export const CRITERIA_PATCH_TEXT = `[auto-pipeline] verdict-criteria correction (the assets above still describe the legacy rule): the verdict is gated on the BLOCKING SET — the verdict is FAIL only when \`## Issues\` carries at least one BLOCKING issue (severity Blocker or High WITH Evidence); \`None\` or only Medium/Low entries means PASS. Every issue row requires a stable ID (\`DR-<round>-n\`) and a required severity; a Blocker/High without Evidence or a missing severity makes the report INVALID (never routed). Previous-round open ids must be restated in \`## Issue Ledger\` with a legal status or the report is invalid.`;
 
 /** True when one of the legacy texts appears in the source. */
 export function detectLegacyCriteria(content: string): boolean {

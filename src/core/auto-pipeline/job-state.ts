@@ -61,7 +61,7 @@ export interface AutoJobDocProgress {
   updatedAt: number;
   failReason?: string;
   /**
-   * 229 Phase 6 (F6): read-only text mirror of the doc's degradedPass record
+   * read-only text mirror of the doc's degradedPass record
    * (reason/round/severityCounts). Progress-display ONLY — never judging.
    */
   degradedPass?: { reason: string; round: number; severityCounts: Record<string, number> };
@@ -136,14 +136,14 @@ export interface AutoJobState {
     autoResumes: number;
     finalGraceUsed: Record<string, number>;
     /**
-     * 229 Phase 4 (F4/B10): per-DOC no-progress observation grace for BOTH
+     * per-DOC no-progress observation grace for BOTH
      * loops (review/fix via `review-no-progress`, design-review via the
      * coordinator). INDEPENDENT of `finalGraceUsed` — one being exhausted
      * never consumes the other; progress resets the doc's counter to 0.
      */
     noProgressGraceUsed: Record<string, number>;
     /**
-     * 229 Phase 4 (B10/R1-Q5 C): the cumulative design-review round count
+     * the cumulative design-review round count
      * INHERITED across re-runs of the SAME doc (sidecar lifetime). The
      * coordinator mirrors its dispatch counter here at the counting point;
      * a fresh job = a fresh sidecar = a fresh budget (never `resetOnStart`).
