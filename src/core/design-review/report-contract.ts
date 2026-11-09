@@ -70,8 +70,8 @@ export const DESIGN_REVIEW_IDENTITY_FIELDS: readonly DesignReviewIdentityFieldSp
   },
 ];
 
-/** Canonical report sections (193: all four are mandatory). */
-export type DesignReviewReportSectionKey = "summary" | "issues" | "recommendations" | "verdict";
+/** Canonical report sections (193: all four are mandatory; 229 adds the optional Issue Ledger). */
+export type DesignReviewReportSectionKey = "summary" | "issues" | "recommendations" | "verdict" | "issueLedger";
 
 /** Heading specification for one mandatory section. */
 export interface DesignReviewReportSectionSpec {
@@ -82,6 +82,13 @@ export interface DesignReviewReportSectionSpec {
   headingPattern: string;
   /** Hint shown in corrective messages (canonical heading + aliases) */
   headingHint: string;
+  /**
+   * 229 Phase 0 (F2): whether the section's ABSENCE fails the contract.
+   * The four 193 sections are always required; the cross-round `Issue
+   * Ledger` becomes required ONLY when the caller passes
+   * `requireIssueLedger === true` (a previous round left open items).
+   */
+  required: boolean;
 }
 
 /**
@@ -94,24 +101,35 @@ export const DESIGN_REVIEW_REPORT_SECTIONS: readonly DesignReviewReportSectionSp
     label: "Summary",
     headingPattern: "^#{1,4}\\s*(Summary|摘要|总结)\\s*$",
     headingHint: "## Summary (or ## 摘要 / ## 总结)",
+    required: true,
   },
   {
     key: "issues",
     label: "Issues",
     headingPattern: DEFAULT_ISSUE_HEADING_PATTERN,
     headingHint: "## Issues (or ## 问题 / ## 问题列表)",
+    required: true,
   },
   {
     key: "recommendations",
     label: "Recommendations",
     headingPattern: "^#{1,4}\\s*(Recommendations?|Suggestions?|修改建议|改进建议|建议)\\s*$",
     headingHint: "## Recommendations (or ## 建议 / ## 修改建议)",
+    required: true,
   },
   {
     key: "verdict",
     label: "Verdict",
     headingPattern: "^#{1,4}\\s*(Verdict|Conclusion|结论|判定)\\s*$",
     headingHint: "## Verdict (or ## 结论 / ## 判定)",
+    required: true,
+  },
+  {
+    key: "issueLedger",
+    label: "Issue Ledger",
+    headingPattern: "^#{1,4}\\s*(Issue Ledger|问题台账)\\s*$",
+    headingHint: "## Issue Ledger (or ## 问题台账)",
+    required: false,
   },
 ];
 
@@ -124,6 +142,28 @@ export interface DesignReviewReportContractOptions {
   requireOperation?: boolean;
   /** Require the `**input hash**` row (default true, same condition as above). */
   requireInputHash?: boolean;
+  /**
+   * 229 Phase 0 (F2): require the cross-round `## Issue Ledger` section when
+   * a previous round left open items. Default: not required (缺 ledger 不报错).
+   * NOTE (B11): verifier-only tuning switches such as `severityGate` NEVER
+   * enter this contract layer — it governs structure/identity only.
+   */
+  requireIssueLedger?: boolean;
+}
+
+/**
+ * 229 Phase 0 (F2): the sections the contract REQUIRES for this run — the four
+ * 193 sections always, plus the `## Issue Ledger` when `requireIssueLedger`
+ * is explicitly true. Shared by the section checker and the corrective
+ * feedback renderer so both always agree on the same list.
+ */
+export function requiredReportSections(
+  options?: DesignReviewReportContractOptions,
+): readonly DesignReviewReportSectionSpec[] {
+  return DESIGN_REVIEW_REPORT_SECTIONS.filter(
+    (spec) =>
+      spec.required || (spec.key === "issueLedger" && options?.requireIssueLedger === true),
+  );
 }
 
 
@@ -191,16 +231,18 @@ export function checkDesignReviewReportIdentity(
 }
 
 /**
- * Check the four mandatory sections: exactly one heading each plus substantive
- * content under it. Failures are reported in contract order, independent of how
- * the report is arranged (any section order is acceptable).
+ * Check the required sections (229 Phase 0: `requiredReportSections(options)`,
+ * so a missing `Issue Ledger` fails ONLY when the caller required it):
+ * exactly one heading each plus substantive content under it. Failures are
+ * reported in contract order, independent of how the report is arranged (any
+ * section order is acceptable).
  */
 export function checkDesignReviewReportSections(
   lines: readonly string[],
   options?: DesignReviewReportContractOptions,
 ): string[] {
   const failures: string[] = [];
-  for (const spec of DESIGN_REVIEW_REPORT_SECTIONS) {
+  for (const spec of requiredReportSections(options)) {
     const pattern =
       spec.key === "issues"
         ? options?.issueHeadingPattern ?? spec.headingPattern

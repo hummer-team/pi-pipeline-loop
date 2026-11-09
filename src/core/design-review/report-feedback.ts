@@ -19,7 +19,7 @@ import type { PipelineStage, SessionMeta, VerifyFailureItem } from "../../types"
 import { deriveDomainVerificationContext } from "./verification-context";
 import {
   DESIGN_REVIEW_IDENTITY_FIELDS,
-  DESIGN_REVIEW_REPORT_SECTIONS,
+  requiredReportSections,
 } from "./report-contract";
 
 /** ruleType the trusted auto-verifier attaches to design-review REPORT defects. */
@@ -138,7 +138,9 @@ function renderReportFeedback(
   push("Required sections — each EXACTLY once, any order, spacing/case free, and each with");
   push("real content (blank lines, unfilled {placeholders}, code blocks, blockquotes and HTML");
   push("comments do NOT count):");
-  for (const spec of DESIGN_REVIEW_REPORT_SECTIONS) push(`  - ${spec.label}: ${spec.headingHint}`);
+  // 229 Phase 0 (F2): the required list is shared with the section checker
+  // (`requiredReportSections`) — a required Issue Ledger renders here too.
+  for (const spec of requiredReportSections()) push(`  - ${spec.label}: ${spec.headingHint}`);
   push();
   push("Follow this shape exactly:");
   push("```markdown");
@@ -152,8 +154,13 @@ function renderReportFeedback(
   push();
   push("## Issues");
   push();
-  push("[When there are NO issues write exactly: None  — otherwise one numbered item per");
-  push("concrete problem. An empty Issues section is never interpreted as no issues.]");
+  push("| ID | Severity | Evidence | Summary |");
+  push("| --- | --- | --- | --- |");
+  push(`| ${`DR-${context.round}-1`} | Blocker | <command / assertion / commit> | <one concrete problem> |`);
+  push();
+  push("[When there are NO issues write exactly: None — an empty Issues section is never");
+  push("interpreted as no issues. Severity is REQUIRED on every issue; a Blocker or High");
+  push("issue additionally requires Evidence. PASS = `None` or no blocking issue.]");
   push();
   push("## Recommendations");
   push();
@@ -162,7 +169,7 @@ function renderReportFeedback(
   push("## Verdict");
   push();
   push("**Design Review: PASS**");
-  push("[Use FAIL whenever any valid issue exists — valid issues always mean FAIL.]");
+  push("[PASS = `None` or no blocking issue; it is NOT automatic “any issue ⇒ FAIL”.]");
   push("```");
 
   if (smartMode) {

@@ -217,12 +217,16 @@ describe("193 Phase 0: structure — four sections exactly once, substantive con
   it("complete report has no structure failures (all four headings recognized)", () => {
     const lines = stripInertLines(completeReport());
     expect(checkDesignReviewReportSections(lines)).toEqual([]);
-    expect(DESIGN_REVIEW_REPORT_SECTIONS.map((s) => s.key)).toEqual([
+    // 229 Phase 0 (F2): the constant gains the OPTIONAL cross-round ledger
+    // spec (`required: false`); the four 193 sections keep their order and
+    // any missing `Issue Ledger` still fails nothing when not required.
+    expect(DESIGN_REVIEW_REPORT_SECTIONS.filter((s) => s.required).map((s) => s.key)).toEqual([
       "summary",
       "issues",
       "recommendations",
       "verdict",
     ]);
+    expect(DESIGN_REVIEW_REPORT_SECTIONS.find((s) => s.key === "issueLedger")?.required).toBe(false);
   });
 
   it("missing sections are named with their canonical heading hint", () => {

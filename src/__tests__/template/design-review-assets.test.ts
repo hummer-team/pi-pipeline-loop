@@ -51,7 +51,7 @@ import type { ConfirmMode } from "../../types";
 // 193 fix (review issue 3): heading-tolerance parity between the deployed
 // verify.md declarations and the trusted domain contract.
 import { parseFrontmatter } from "../../core/verify-frontmatter";
-import { DESIGN_REVIEW_REPORT_SECTIONS } from "../../core/design-review/report-contract";
+import { requiredReportSections } from "../../core/design-review/report-contract";
 import { DEFAULT_ISSUE_HEADING_PATTERN } from "../../core/design-review/report-sections";
 
 const TEMPLATE_ROOT = path.join(__dirname, "..", "..", "template");
@@ -341,7 +341,7 @@ describe("193 Phase 4: decision-contract asset consistency", () => {
     const nodes = group.rules.filter(
       (n) => n.type === "fileContentPattern" && (n.patterns?.length ?? 0) > 0,
     );
-    for (const spec of DESIGN_REVIEW_REPORT_SECTIONS) {
+    for (const spec of requiredReportSections()) {
       const canonical = `## ${spec.label}`;
       const anchors = nodes.filter((n) =>
         spec.key === "issues"
@@ -391,7 +391,10 @@ describe("193 fix (review issue 3): deployed heading declarations match the doma
 
   it("each mandatory section: the deployed pattern (engine 'm') agrees with the contract pattern ('i') on every sampled heading", async () => {
     const nodes = await deployedHeadingNodes();
-    for (const spec of DESIGN_REVIEW_REPORT_SECTIONS.filter((s) => s.key !== "issues")) {
+    // 229 Phase 0 (F2): parity is asserted over the MANDATORY sections — the
+    // optional cross-round `Issue Ledger` has no deployed anchor yet (229
+    // Phase 7 rewrites the assets).
+    for (const spec of requiredReportSections().filter((s) => s.key !== "issues")) {
       const contractRe = new RegExp(spec.headingPattern, "i");
       const canonical = `## ${spec.label}`;
       const matches = nodes.filter((n) => {

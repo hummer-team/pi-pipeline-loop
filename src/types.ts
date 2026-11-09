@@ -564,6 +564,136 @@ export interface GitInvariantBaseline {
   recordedAt: number;
 }
 
+// ─── Review Loop Convergence Contracts (229 Phase 0) ─────────────────────────
+
+/**
+ * 229 Phase 0 (F1): issue severity ladder. `Blocker`/`High` are BLOCKING
+ * (they fail the design-review verdict); `Medium`/`Low` are informational.
+ */
+export type IssueSeverity = "Blocker" | "High" | "Medium" | "Low";
+
+/**
+ * 229 Phase 0 (F2 / review issue 10): issue lifecycle status inside the
+ * cross-round ledger. Unknown/legacy status values are normalized to `open`
+ * at the parsing seam and treated as open by `computeOpenSet`.
+ */
+export type IssueStatus = "open" | "fixed" | "accepted-risk" | "carry-over";
+
+/**
+ * 229 Phase 0 (F1): one design-review issue parsed from a report's
+ * `## Issues` / `## Issue Ledger` section, normalized for the cross-round
+ * ledger and the closure check.
+ */
+export interface DesignReviewIssueRecord {
+  /** Stable issue id (`DR-<round>-<n>`, or the id the report supplied). */
+  id: string;
+  /** Round that produced the issue (the id's round segment when parseable, else the parsed round). */
+  origin: string;
+  /** Severity when the report declared a legal one; missing/illegal values stay `undefined` (verifier rejects). */
+  severity?: IssueSeverity;
+  /** Lifecycle status; absent ⇒ treated as `open`. */
+  status?: IssueStatus;
+  /** Evidence citation (command / assertion / commit); required for blocking severities. */
+  evidence?: string;
+  /** Issue text (trimmed). */
+  text: string;
+}
+
+/**
+ * 229 Phase 0 (F5/B16): machine-readable exhaustion reasons that can authorize
+ * a degraded (`advance`/loop-exit) release.
+ */
+export type DegradedPassReason =
+  | "no_progress_detected"
+  | "design_review_budget_exhausted"
+  | "review_loop_budget_exhausted"
+  | "max_loop_cycles";
+
+/** Which degraded-pass scope a record belongs to (B5). */
+export type DegradedPassScope = "loop-exit" | "completion";
+
+/**
+ * 229 Phase 0 (F6/B5): one open issue carried by a degraded-pass record.
+ * `loop-exit` mechanically converts open items to `carry-over`;
+ * `completion` requires zero blocking items and records `accepted-risk`.
+ */
+export interface DegradedPassIssue {
+  /** Stable issue id from the ledger. */
+  id: string;
+  /** Resolved severity (fail-closed construction: unresolvable severity rejects the release). */
+  severity: IssueSeverity;
+  /** Mechanical status conversion applied by the releasing exit. */
+  status: "accepted-risk" | "carry-over";
+}
+
+/**
+ * 229 Phase 0 (F6): persisted degraded-pass release record (the completion
+ * gate's sixth-evidence candidate and the downstream carry-over source).
+ */
+export interface DegradedPassRecord {
+  /** Release scope (B5): loop exit is NOT terminal evidence; completion may substitute gate evidence ①. */
+  scope: DegradedPassScope;
+  /** Exhaustion reason that authorized the release. */
+  reason: DegradedPassReason;
+  /** Owning pipeline id. */
+  pipelineId: string;
+  /** Requirement document path (completion-gate binding). */
+  docPath: string;
+  /** Stage the release left (design-review or review/fix). */
+  stage: PipelineStage;
+  /** Round the release happened in. */
+  round: number;
+  /** Open issues leaving the loop, with their mechanical status. */
+  openIssues: DegradedPassIssue[];
+  /** Severity histogram of `openIssues`. */
+  severityCounts: Partial<Record<IssueSeverity, number>>;
+  /** Auto job id, when the release happened inside an auto job. */
+  jobId?: string;
+  /** Unix ms of the record. */
+  at: number;
+}
+
+/** 229 Phase 0 (F4): which loop a progress ledger / exhaustion record belongs to. */
+export type ReviewProgressLoopKind = "reviewFix" | "designReview";
+
+/**
+ * 229 Phase 0 (F4): minimal round snapshot consumed by `evaluateNoProgress`.
+ * `streak` is present only on STORED ledger entries (the persistence point).
+ */
+export interface ReviewProgressSnapshot {
+  loop: ReviewProgressLoopKind;
+  /** Open issue ids of the round (open + carry-over + unknown statuses). */
+  openIds: readonly string[];
+  severityCounts: Partial<Record<IssueSeverity, number>>;
+  /** Consecutive no-progress rounds so far (stored ledgers only). */
+  streak?: number;
+}
+
+/** 229 Phase 0 (F4): review/fix loop no-progress ledger on `SessionMeta`. */
+export interface ReviewFixProgressLedger extends ReviewProgressSnapshot {
+  loop: "reviewFix";
+  /** 1-based review round index this snapshot belongs to. */
+  roundIndex: number;
+  pipelineId: string;
+  streak: number;
+}
+
+/** 229 Phase 0 (F4): design-review loop no-progress ledger on `DesignReviewState`. */
+export interface DesignReviewProgressLedger extends ReviewProgressSnapshot {
+  loop: "designReview";
+  /** Design-review round this snapshot belongs to. */
+  round: number;
+  pipelineId?: string;
+  streak: number;
+}
+
+/** 229 Phase 0 (F5): one exhausted loop record (cleared per loop by `reset_loop_budget`). */
+export interface ExhaustedLoopRecord {
+  loop: ReviewProgressLoopKind;
+  reason: DegradedPassReason;
+  at: number;
+}
+
 /**
  * Runtime metadata stored in the pi session, tracking the pipeline's
  * current state across stage transitions and loop iterations.
@@ -1148,6 +1278,33 @@ export interface SessionMeta {
    * period clears. Absent = never sampled (e.g. no git write happened).
    */
   gitInvariantBaseline?: GitInvariantBaseline;
+
+  /**
+   * 229 Phase 0 (F6): degraded-pass release record. `completion` scope may
+   * substitute completion-gate evidence ① ONLY (B1); `loop-exit` scope is
+   * carry-over visibility for the downstream develop dispatch.
+   */
+  degradedPass?: DegradedPassRecord;
+
+  /**
+   * 229 Phase 0 (F4): review/fix loop no-progress ledger. Owned by the
+   * review/fix loop only (never by design-review, which keeps its own ledger);
+   * `loop` identity is what `evaluateNoProgress` pins (`no_progress_loop_mismatch`).
+   */
+  reviewLedger?: ReviewFixProgressLedger;
+
+  /**
+   * 229 Phase 0 (F5): exhausted loop records of the current period. Cleared
+   * per loop by `reset_loop_budget`; re-entry into an exhausted loop is banned.
+   */
+  exhaustedLoops?: ExhaustedLoopRecord[];
+
+  /**
+   * 229 Phase 0 (F8 / review issue 6): review report content hash captured
+   * BEFORE a fix dispatch. Baseline for the fix-stage write-whitelist verifier
+   * (only allowed fields may change afterwards).
+   */
+  reviewReportHashAtFixStart?: string;
 }
 
 // ─── Design Review State Types (Phase 0 / 191) ───────────────────────────────
@@ -1430,6 +1587,34 @@ export type DesignReviewState = {
    */
   reviewInputReceipt?: DesignReviewInputReceipt;
 
+  /**
+   * 229 Phase 0 (F4): design-review loop no-progress ledger. Distinct from the
+   * review/fix ledger (`meta.reviewLedger`) so the two loops never mix data.
+   */
+  progressLedger?: DesignReviewProgressLedger;
+
+  /**
+   * 229 Phase 0 (F2 / B9): read-synthesized legacy carry-over of the previous
+   * round's report (reports without a `## Issue Ledger`). Synthesis is a pure
+   * read-time function; only the coordinator persists it here, and history
+   * reports are never rewritten.
+   */
+  legacyCarryOver?: DesignReviewIssueRecord[];
+
+  /**
+   * 229 Phase 0 (F3 / B15): hashes of ALL top-level `##` plan sections captured
+   * before an update operation. Baseline for the mechanical declared-scope
+   * check; absent ⇒ the scope check degrades (legacy updates).
+   */
+  updateBaselineSectionHashes?: Record<string, string>;
+
+  /**
+   * 229 Phase 0 (B14): declared update scope persisted by the coordinator after
+   * a READY update validation. The next review round's findings directive
+   * renders from it; absent ⇒ the directive falls back to "undeclared".
+   */
+  lastDeclaredScope?: { phases: number[]; sections: string[] };
+
   /** Timestamp when authorization was granted */
   authorizedAt: number;
 
@@ -1611,7 +1796,15 @@ export type PipelineDecision =
   | "abort"
   | "choose_stage"
   | "set_budget"
-  | "rewind_last_round";
+  | "rewind_last_round"
+  /**
+   * 229 (B2/问题 1): the loop-exhaustion exit — implemented as its OWN decision
+   * because `skip` is rejected while the design-review domain is active and
+   * must keep its legacy semantics untouched. Branches are wired in 229
+   * Phase 5 (before that it reaches `executeDecision`'s default arm).
+   */
+  | "advance"
+  | "reset_loop_budget";
 
 /**
  * 210 Phase 0: one automatic decision rule for a given blocked reason

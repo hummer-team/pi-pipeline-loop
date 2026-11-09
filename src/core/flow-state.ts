@@ -199,6 +199,11 @@ const DECISION_LABELS: Record<PipelineDecision, string> = {
   choose_stage: "Choose stage…",
   set_budget: "Set round budget",
   rewind_last_round: "Rewind last_round",
+  // 229 Phase 0 (declaration only): labels exist so `Record<PipelineDecision, string>`
+  // stays exhaustive when the union grew. `advance` is NOT rendered in any menu
+  // until 229 Phase 5 wires the exhaustion branches (`buildDecisionMenu`).
+  advance: "Degraded pass (advance)",
+  reset_loop_budget: "Reset loop budget (raises the cap)",
 };
 
 // ─── getFlowState ───────────────────────────────────────────────────────────
