@@ -3423,8 +3423,7 @@ async function spawnDesignReviewAgent(
   // identically on both tracks. Fixed order: task.prompt → findings directive
   // (229 Phase 7 appends the legacy-criteria patch after it) → ledger guidance.
   let findingsDirective: string | undefined;
-  if (operation.kind === "review") {
-    const { resolvePreviousOpenFindings, renderReviewFindingsDirective, declaredScopeOf } =
+  if (operation.kind === "review") {    const { resolvePreviousOpenFindings, renderReviewFindingsDirective, declaredScopeOf } =
       await import("../auto-pipeline/review-findings-directive");
     const previous = resolvePreviousOpenFindings({ planDoc: drState.planDoc, round: drState.round });
     if (previous !== null) {
@@ -3465,6 +3464,14 @@ async function spawnDesignReviewAgent(
   const finalPrompt = [
     task.prompt,
     ...(findingsDirective !== undefined ? ["", findingsDirective] : []),
+    // 229 Phase 6 (F6/问题 19 / B8): carry-over VISIBILITY on the develop
+    // handoff ONLY — mutually exclusive with the review findings directive
+    // (B8). Zero bytes when no loop-exit record exists (prompt unchanged).
+    ...(operation.kind === "develop-handoff"
+      ? renderCarryOverSummary(meta.degradedPass) !== null
+        ? ["", renderCarryOverSummary(meta.degradedPass) as string]
+        : []
+      : []),
     ...(ledgerGuidance ? ["", ledgerGuidance] : []),
   ].join("\n");
   const spawnDescription = task.description;
@@ -3516,4 +3523,20 @@ async function spawnDesignReviewAgent(
     dispatchOutcome: outcome,
   }, "warn");
   return { ok: false, error: "spawn_failed", outcome };
+}
+
+/**
+ * 229 Phase 6 (F6/问题 19/B8): the develop-handoff carry-over summary — the
+ * loop-exit degraded-pass record made VISIBLE downstream. `null` when no
+ * `loop-exit` record exists (the develop prompt stays byte-identical), and
+ * mutually exclusive with the review findings directive (B8).
+ */
+function renderCarryOverSummary(record: SessionMeta["degradedPass"]): string | null {
+  if (record === undefined || record.scope !== "loop-exit") return null;
+  const tags = record.openIssues
+    .map((i) => `${i.id} | ${i.severity}`)
+    .slice(0, 12)
+    .join(" — ");
+  if (tags === "") return null;
+  return `[auto-pipeline] Carry-over from design-review (accepted by advance): ${tags}`;
 }

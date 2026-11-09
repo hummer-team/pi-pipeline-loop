@@ -108,22 +108,23 @@ export async function evaluateCompletionGate(
     const substituteOk =
       effective !== undefined && effective.scope === "completion" && isDegradedPassBound(meta, effective);
     if (!substituteOk) {
-      if (effective !== undefined && effective.scope === "loop-exit") {
-        // carry-over records NEVER substitute gate evidence ①. They are
-        // downstream visibility only — the normal ① check still applies.
-      }
+      // A completion-scope CANDIDATE the caller supplied is judged RIGHT HERE:
+      // an ineligible one (blocking items left / identity mismatch) reports
+      // `degraded_pass_invalid`, never a silent retryable PASS.
+      const candidateInvalid =
+        input.pendingDegradedPass !== undefined && input.pendingDegradedPass.scope === "completion";
       if (!meta.reviewRound) {
-        return fail("review_not_passed",
-          "no review round is recorded for the current review visit — a historical report is not proof.");
+        return fail(candidateInvalid ? "degraded_pass_invalid" : "review_not_passed",
+          candidateInvalid
+            ? "a completion-scope degraded pass exists but is NOT bound for this run (pipelineId/docPath mismatch or blocking items left)."
+            : "no review round is recorded for the current review visit — a historical report is not proof.");
       }
       const gate = await evaluateReviewExitGate(config, meta);
       if (gate.state !== "conclusion" || gate.verdict?.verdict !== "pass") {
-        if (effective !== undefined) {
-          return fail("degraded_pass_invalid",
-            `a degraded-pass record exists but is NOT eligible for evidence ① (current-round PASS missing: state=${gate.state}).`);
-        }
-        return fail("review_not_passed",
-          `the current review round has no PASS verdict (state=${gate.state}${gate.reason ? `, reason=${gate.reason}` : ""}).`);
+        return fail(candidateInvalid ? "degraded_pass_invalid" : "review_not_passed",
+          candidateInvalid
+            ? "a completion-scope degraded pass exists but is NOT bound for this run (blockers must be zero; pipelineId/docPath must match)."
+            : `the current review round has no PASS verdict (state=${gate.state}${gate.reason ? `, reason=${gate.reason}` : ""}${effective !== undefined ? "; the carried degraded record is downstream visibility only, never evidence ①" : ""}).`);
       }
     }
   }

@@ -84,6 +84,26 @@ function verdictStopReason(
 }
 
 /**
+ * 229 Phase 6 (F8/Phase 7 attribution prep): the DOC-receipt failReason for a
+ * blocked 229 STOP uses the exhausted(<reason>) shape — `freeze_unresolvable`
+ * stays reserved for REAL unresolvable freezes (never an exhausted loop).
+ */
+export function exhaustedDocReason(reason: string | undefined): string | undefined {
+  if (reason === undefined || reason === "") return undefined;
+  if (reason.startsWith("freeze_unresolvable(") || EXHAUSTION_REASON_SET.has(reason)) {
+    return `exhausted(${reason.startsWith("freeze_unresolvable(") ? reason.slice("freeze_unresolvable(".length, -1) : reason})`;
+  }
+  return undefined;
+}
+
+const EXHAUSTION_REASON_SET = new Set<string>([
+  "no_progress_detected",
+  "design_review_budget_exhausted",
+  "review_loop_budget_exhausted",
+  "max_loop_cycles",
+]);
+
+/**
  * 6.1-③: derive the cross-doc counters from the CURRENT meta. Called from the
  * settle seam (the single write point) — `recordStageVisit` stays pure.
  *

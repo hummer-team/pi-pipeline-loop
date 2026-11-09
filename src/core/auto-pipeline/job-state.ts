@@ -60,6 +60,11 @@ export interface AutoJobDocProgress {
   lastVerifyAttempts?: number;
   updatedAt: number;
   failReason?: string;
+  /**
+   * 229 Phase 6 (F6): read-only text mirror of the doc's degradedPass record
+   * (reason/round/severityCounts). Progress-display ONLY — never judging.
+   */
+  degradedPass?: { reason: string; round: number; severityCounts: Record<string, number> };
   /** per-doc clarify degradation flag. */
   clarifyFallbackUsed?: boolean;
   /** idempotency receipt — `${jobId}:${docIndex}:${outcome}` of the applied finalize. */
