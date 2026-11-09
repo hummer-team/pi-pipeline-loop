@@ -19,12 +19,13 @@
  */
 
 import * as fs from "node:fs/promises";
-import type { ExecFn, PipelineConfig, PipelineStage, SessionMeta, SummaryMeta } from "../../types";
+import type { DegradedPassRecord, ExecFn, PipelineConfig, PipelineStage, SessionMeta, SummaryMeta } from "../../types";
 import { checkStageSummaryHash } from "../../utils/summary-hash";
 import { safeWriteAuditLog } from "../../utils/auditLog";
 import { evaluateReviewExitGate } from "../review-exit-gate";
 import { checkCommitProof } from "../commit-proof";
 import { readSummaryCommitIds } from "../stage-evidence";
+import { isDegradedPassBound } from "./degraded-pass";
 import { stopAutoDocOnHardFailure } from "./stop-policy";
 
 export type CompletionGateFailure = {
@@ -33,7 +34,8 @@ export type CompletionGateFailure = {
     | "design_review_not_closed"
     | "pending_debt"
     | "fix_commit_unproven"
-    | "summary_not_valid";
+    | "summary_not_valid"
+    | "degraded_pass_invalid";
   detail: string;
 };
 
@@ -48,6 +50,12 @@ export interface CompletionGateInput {
   now?: number;
   /** Runtime ctx (role evidence + child stop forwarding); omitted → owner. */
   runtimeCtx?: unknown;
+  /**
+   * 229 Phase 6 (B1/F6): the sixth-evidence candidate built by the caller
+   * (the advance branch). When present it may substitute evidence ①; on a
+   * rejection the caller must NOT persist it (candidate evaluation only).
+   */
+  pendingDegradedPass?: DegradedPassRecord;
 }
 
 /** Delivery stages whose summary must be VALID before the pipeline closes. */
@@ -91,19 +99,32 @@ export async function evaluateCompletionGate(
   const autoValidations: Array<{ stage: PipelineStage; previousStatus: SummaryMeta["status"]; entry: SummaryMeta }> = [];
 
   // ① — this round's review must be a REAL PASS.
+  // 229 Phase 6 (B1): a BOUND candidate `pendingDegradedPass` (scope
+  // "completion", zero blocking) may substitute THIS evidence only; ② ③ ④ ⑤
+  // and the four write points stay untouched (degraded release is not a
+  // bypass). An unbound/ineligible record ⇒ degraded_pass_invalid.
   if (visited.has("review")) {
-    if (!meta.reviewRound) {
-      return fail(
-        "review_not_passed",
-        "no review round is recorded for the current review visit — a historical report is not proof.",
-      );
-    }
-    const gate = await evaluateReviewExitGate(config, meta);
-    if (gate.state !== "conclusion" || gate.verdict?.verdict !== "pass") {
-      return fail(
-        "review_not_passed",
-        `the current review round has no PASS verdict (state=${gate.state}${gate.reason ? `, reason=${gate.reason}` : ""}).`,
-      );
+    const effective = input.pendingDegradedPass ?? meta.degradedPass;
+    const substituteOk =
+      effective !== undefined && effective.scope === "completion" && isDegradedPassBound(meta, effective);
+    if (!substituteOk) {
+      if (effective !== undefined && effective.scope === "loop-exit") {
+        // carry-over records NEVER substitute gate evidence ①. They are
+        // downstream visibility only — the normal ① check still applies.
+      }
+      if (!meta.reviewRound) {
+        return fail("review_not_passed",
+          "no review round is recorded for the current review visit — a historical report is not proof.");
+      }
+      const gate = await evaluateReviewExitGate(config, meta);
+      if (gate.state !== "conclusion" || gate.verdict?.verdict !== "pass") {
+        if (effective !== undefined) {
+          return fail("degraded_pass_invalid",
+            `a degraded-pass record exists but is NOT eligible for evidence ① (current-round PASS missing: state=${gate.state}).`);
+        }
+        return fail("review_not_passed",
+          `the current review round has no PASS verdict (state=${gate.state}${gate.reason ? `, reason=${gate.reason}` : ""}).`);
+      }
     }
   }
 
@@ -160,8 +181,7 @@ export async function evaluateCompletionGate(
 
   // ⑤ — every visited delivery stage carries a VALID summary for THIS visit.
   for (const stage of DELIVERY_STAGES) {
-    if (!visited.has(stage)) continue;
-    const entry = meta.summaries?.[stage];
+    if (!visited.has(stage)) continue;    const entry = meta.summaries?.[stage];
     if (!entry) {
       return fail("summary_not_valid", `stage "${stage}" has no summary artifact.`);
     }

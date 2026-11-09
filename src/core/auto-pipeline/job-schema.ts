@@ -55,7 +55,7 @@ export interface AutoJobDoc {
  * deliberately NOT a member of the 210 `PipelineDecision` union, because the
  * freeze-autopilot never dispatches provider-chain decisions.
  */
-export type FreezeAction = "resume" | "abort" | "stop-and-report";
+export type FreezeAction = "resume" | "abort" | "stop-and-report" | "advance";
 
 /** C-2: autonomy tier. `manual` is not a job value (no job = human track). */
 export type AutoJobTier = "rule" | "assisted";
@@ -65,6 +65,14 @@ export type ClarifyOnExhausted = "stop" | "self-confirm";
 
 /** What a design-review FAIL is routed to (renamed from `failAction`). */
 export type DesignReviewOnFail = "auto-revise" | "stop";
+
+/** 229 (F5/B16): what loop-budget/NO-PROGRESS exhaustion degrades to.
+ * `undefined` KEPT — an absent value means "loop default" (`advance` on the
+ * consumption side) so a legacy job's behaviour is never silently changed. */
+export type DesignReviewOnExhausted = "advance" | "await-human" | "stop";
+
+/** 229 (B3): the exit target of an `advance` exhaustion release. */
+export type ExhaustedAdvanceTarget = "nextStage" | "awaiting_human";
 
 /** Whether an auto job may let the agent run git state-changing commands. */
 export type GitModifyPolicy = "allow" | "block";
@@ -87,6 +95,19 @@ export interface AutoJobConfig {
    */
   designReview: { enabled?: boolean; mode?: ConfirmMode; maxRounds: number; onFail: DesignReviewOnFail };
   reviewFix: { maxRounds: number; maxLoopsPerStage: number };
+  /**
+   * 229 (F5/B16): loop-exhaustion exits. KEPT `undefined` when not configured
+   * (consumers resolve `?? "advance"`); only these two loop keys exist in v1.
+   */
+  onExhausted?: {
+    designReview?: DesignReviewOnExhausted;
+    reviewFix?: DesignReviewOnExhausted;
+  };
+  /** 229 (B3): per-loop advance target; default `nextStage` (the loop exit). */
+  onExhaustedTarget?: {
+    designReview?: ExhaustedAdvanceTarget;
+    reviewFix?: ExhaustedAdvanceTarget;
+  };
   /** Q15: verify attempts allowed before the verify-failure hard stop. */
   verify: { maxAttempts: number };
   writePolicy: {
@@ -695,6 +716,48 @@ export function parseAutoJob(yamlText: string, sourcePath: string): AutoJobParse
     warnings.push('"reviewFix" not set — using default { maxRounds: 6, maxLoopsPerStage: 6 }');
   }
 
+  // 229 (F5/B16) top-level onExhausted / onExhaustedTarget — loop policies
+  // KEPT `undefined` when not configured (a legacy job behaves exactly as
+  // before; the consumption resolves the loop default `advance` itself).
+  let onExhausted: AutoJobConfig["onExhausted"] | undefined;
+  const onExhaustedRaw = asObject(root.onExhausted);
+  if (onExhaustedRaw) {
+    rejectUnknownKeys(onExhaustedRaw, ["designReview", "reviewFix"], "onExhausted.", errors);
+    const parsed: { designReview?: DesignReviewOnExhausted; reviewFix?: DesignReviewOnExhausted } = {};
+    for (const key of ["designReview", "reviewFix"] as const) {
+      const value = onExhaustedRaw[key];
+      if (value === undefined) continue;
+      if (value === "advance" || value === "await-human" || value === "stop") {
+        parsed[key] = value;
+      } else {
+        applyEnumError(errors, `onExhausted.${key}`, '"advance" | "await-human" | "stop"');
+      }
+    }
+    if (Object.keys(parsed).length > 0) onExhausted = parsed;
+  } else {
+    warnings.push('"onExhausted" not set — loop default advance applies (B16; legacy runs untouched)');
+  }
+
+    let onExhaustedTarget: AutoJobConfig["onExhaustedTarget"] | undefined;
+  const onExhaustedTargetRaw = asObject(root.onExhaustedTarget);
+  if (onExhaustedTargetRaw) {
+    rejectUnknownKeys(onExhaustedTargetRaw, ["designReview", "reviewFix"], "onExhaustedTarget.", errors);
+    const parsed: { designReview?: ExhaustedAdvanceTarget; reviewFix?: ExhaustedAdvanceTarget } = {};
+    for (const key of ["designReview", "reviewFix"] as const) {
+      const value = onExhaustedTargetRaw[key];
+      if (value === undefined) continue;
+      if (value === "nextStage" || value === "awaiting_human") {
+        if (onExhausted !== undefined && onExhausted[key] === "advance") {
+          warnings.push(`"onExhaustedTarget.${key}=awaiting_human" degrades advance to await-human`);
+        }
+        parsed[key] = value;
+      } else {
+        applyEnumError(errors, `onExhaustedTarget.${key}`, '"nextStage" | "awaiting_human"');
+      }
+    }
+    if (Object.keys(parsed).length > 0) onExhaustedTarget = parsed;
+  }
+
   // verify — inherit-not-overlay: filled for consumers, overlaid only if set.
   let verify: AutoJobConfig["verify"] = { maxAttempts: 3 };
   let verifyMaxAttemptsConfigured = false;
@@ -813,6 +876,8 @@ export function parseAutoJob(yamlText: string, sourcePath: string): AutoJobParse
     confirm: confirm!,
     designReview: designReview!,
     reviewFix: reviewFix!,
+    onExhausted,
+    onExhaustedTarget,
     verify: verify!,
     writePolicy: writePolicyResult!.policy,
     freezePolicy: freezePolicy!,

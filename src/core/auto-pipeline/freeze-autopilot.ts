@@ -33,40 +33,117 @@ import { writeJobState } from "./job-state";
 import { getActiveJobId, isAutoJobActive, readActiveJobContext } from "./config-overlay";
 import { auditAutoDecision } from "./auto-audit";
 import { auditAutoDiagnostic, reportAutoFailure } from "./diagnostics";
+import {
+  EXHAUSTION_REASONS,
+  resolveExhaustionLoop,
+  resolveExhaustionTarget,
+  type ExhaustionLoop,
+  type ExhaustionTarget,
+} from "./loop-exhaustion";
 
 /** One resolved freeze action plus the precedence branch that produced it. */
 export interface ResolvedFreezeAction {
-  action: FreezeAction;
-  /** `by_reason` | `on_freeze` | `max_auto_resumes` — diagnostics/audit only. */
+  action: FreezeAction | "advance";
+  /** `by_reason` | `on_exhausted` | `on_freeze` | `max_auto_resumes` — diagnostics/audit only. */
   basis: string;
+  /** 229 (F5/B3): the resolved exhaustion loop + target for an advance. */
+  loop?: ExhaustionLoop;
+  target?: ExhaustionTarget;
+  /** 229 (F5): `"await-human"` keeps the frozen pipeline with an audit only. */
+  mode?: "await-human";
 }
 
 /**
  * Resolve the auto action for one freeze reason (pure).
  *
- * `byReason[blockedReason]` wins over `onFreeze`; a missing/unmatched reason
- * falls through to `onFreeze`, and finally to `"stop-and-report"`. A `resume`
- * is downgraded to `"stop-and-report"` once `maxAutoResumes` is used up
- * (cross-doc counter lives in the sidecar).
+ * 229 (B16) precedence: `byReason[reason]` → an EXPLICIT loop
+ * `onExhausted[loop]` → `onFreeze` → the loop-default `advance` →
+ * `"stop-and-report"`. ONLY the 229 exhaustion-reason family may take the
+ * loop exits; an inherited `onFreeze` beats the loop default (问题 17), so a
+ * legacy job's behaviour is never silently changed. A `resume` is downgraded
+ * to `"stop-and-report"` once `maxAutoResumes` is used up (cross-doc counter
+ * lives in the sidecar).
  */
 export function resolveFreezeAction(input: {
   meta: SessionMeta;
   job: AutoJobConfig;
   state: AutoJobState;
   reason: string;
+  config?: PipelineConfig;
 }): ResolvedFreezeAction {
-  const { job, state, reason } = input;
+  const { job, state, reason, meta, config } = input;
   const byReason = job.freezePolicy?.byReason ?? {};
   const explicit = byReason[reason];
-  const action: FreezeAction = explicit ?? job.freezePolicy?.onFreeze ?? "stop-and-report";
-  const basis = explicit ? "by_reason" : "on_freeze";
-  if (action !== "resume") return { action, basis };
+  if (explicit !== undefined) {
+    if (explicit !== "resume") return { action: explicit, basis: "by_reason" };
+    const maxAutoResumes = job.freezePolicy?.maxAutoResumes ?? 0;
+    const used = state.counters?.autoResumes ?? 0;
+    if (used >= maxAutoResumes) {
+      return { action: "stop-and-report", basis: "max_auto_resumes" };
+    }
+    return { action: explicit, basis: "by_reason" };
+  }
+
+  // 229 exhaustion family — loop identity first (问题 2).
+  if (EXHAUSTION_REASONS.has(reason) && config !== undefined) {
+    const loop = resolveExhaustionLoop({ meta, job, reason, config });
+    if (loop !== null) {
+      const configured = loop === "designReview" ? job.onExhausted?.designReview : job.onExhausted?.reviewFix;
+      const targetToken = loop === "designReview"
+        ? job.onExhaustedTarget?.designReview ?? "nextStage"
+        : job.onExhaustedTarget?.reviewFix ?? "nextStage";
+      if (configured === undefined) {
+        // Loop DEFAULT advance (B16): the legacy onFreeze beats it (问题 17).
+        const onFreeze = job.freezePolicy?.onFreeze ?? "stop-and-report";
+        if (onFreeze !== undefined && onFreeze !== "resume") {
+          if (onFreeze === "advance") return { action: "advance", basis: "on_freeze" };
+          return { action: onFreeze, basis: "on_freeze" };
+        }
+        if (onFreeze === "resume") {
+          const maxAutoResumes = job.freezePolicy?.maxAutoResumes ?? 0;
+          const used = state.counters?.autoResumes ?? 0;
+          if (used >= maxAutoResumes) {
+            return { action: "stop-and-report", basis: "max_auto_resumes" };
+          }
+        }
+      } else {
+        // An EXPLICIT loop onExhausted wins over onFreeze.
+        if (configured === "stop") {
+          return { action: "stop-and-report", basis: "on_exhausted" };
+        }
+      }
+      // 229 (F5/B3): resolve the TARGET at routing time (the topology check
+      // runs in the advance arm where a loop-back keeps the freeze).
+      const resolvedTarget = resolveExhaustionTarget({
+        loop,
+        token: targetToken,
+        config,
+        job,
+      });
+      if (!resolvedTarget.ok) {
+        return { action: "stop-and-report", basis: "exhaustion_target_loops_back" };
+      }
+      // resolve the target (topology-checked by the caller's advance arm)
+      return {
+        action: "advance",
+        basis: configured !== undefined ? "on_exhausted" : "loop_default",
+        loop,
+        target: resolvedTarget.target,
+        ...(configured === "await-human" ? { mode: "await-human" as const } : {}),
+      };
+    }
+    // The reason is in the family but NO loop routes → fall through.
+  }
+
+  const fallback: FreezeAction = job.freezePolicy?.onFreeze ?? "stop-and-report";
+  const basis = "on_freeze";
+  if (fallback !== "resume") return { action: fallback, basis };
   const maxAutoResumes = job.freezePolicy?.maxAutoResumes ?? 0;
   const used = state.counters?.autoResumes ?? 0;
   if (used >= maxAutoResumes) {
     return { action: "stop-and-report", basis: "max_auto_resumes" };
   }
-  return { action, basis };
+  return { action: fallback, basis };
 }
 
 /** Menu-shaped result for a decision the autopilot resolved itself. */
@@ -169,6 +246,47 @@ export async function runFreezeAutopilot(
     basis: resolved.basis,
   });
 
+  if (resolved.action === "advance" && resolved.loop !== undefined && config !== undefined) {
+    // 229 (F5): the loop-exhaustion advance arm. `await-human` keeps the
+    // pipeline frozen (audit only); a normal advance resolves the target
+    // (B3) INCLUDING the runtime topology check and then executes the 229
+    // `advance` decision. A failure leaves ZERO new evidence — the pipeline
+    // stays frozen for the operator.
+    if (resolved.mode !== "await-human") {
+      // The target is already topology-checked at routing time.
+      const target = resolved.target ?? "completed";
+      const outcome = await executeDecision(
+        ctx,
+        meta,
+        "advance",
+        config,
+        {
+          decisionSource: "auto",
+          source: "auto_pipeline",
+          targetStage: target,
+          ...(opts?.onStageChanged ? { onStageChanged: opts.onStageChanged } : {}),
+        },
+      );
+      if (outcome.success) {
+        return decidedResult(
+          `Auto job ${jobId}: exhausted ${resolved.loop} loop advanced to ${String(target)} (reason: ${reason}).`,
+        );
+      }
+      return decidedResult(
+        outcome.message,
+      );
+    }
+    await safeWriteAuditLog("loop_exhausted_await_human", {
+      pipelineId: meta.pipelineId,
+      stage: meta.currentStage,
+      loop: resolved.loop,
+      reason,
+    }, "warn");
+    return decidedResult(
+      `Auto job ${jobId}: loop exhausted (${reason}) — waiting for a human decision on the frozen pipeline (await-human).`,
+    );
+  }
+
   if (resolved.action === "resume" || resolved.action === "abort") {
     const outcome = await executeDecision(
       ctx,
@@ -220,6 +338,7 @@ export function isUnresolvableFreeze(input: {
   job: AutoJobConfig;
   state: AutoJobState;
   reason: string;
+  config?: PipelineConfig;
 }): boolean {
   return resolveFreezeAction(input).action === "stop-and-report";
 }

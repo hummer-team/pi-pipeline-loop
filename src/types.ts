@@ -665,6 +665,12 @@ export interface ReviewProgressSnapshot {
   /** Open issue ids of the round (open + carry-over + unknown statuses). */
   openIds: readonly string[];
   severityCounts: Partial<Record<IssueSeverity, number>>;
+  /**
+   * 229 Phase 5/6 (B5/问题 19): per-issue severity map for the degraded-pass
+   * record construction; ids absent from the map carry no declared severity
+   * (treated non-blocking for the completion gate's `Blocker+High === 0`).
+   */
+  severityById?: Record<string, IssueSeverity>;
   /** Consecutive no-progress rounds so far (stored ledgers only). */
   streak?: number;
 }

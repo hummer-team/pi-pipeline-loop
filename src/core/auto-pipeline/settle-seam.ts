@@ -103,6 +103,8 @@ export async function handleAutoSettle(
     job,
     now: Date.now(),
     verifyMaxAttempts: resolveVerifyMaxAttempts(config, job),
+    // 229 (F5/B16): the loop-exhaustion advance exit is consulted here too.
+    config,
   });
   if (hard.kind === "hard") {
     await handleDocFailure(ctx, config, state, job, {

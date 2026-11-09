@@ -20,7 +20,7 @@
  */
 
 import * as fs from "node:fs";
-import type { DesignReviewIssueRecord, SessionMeta, PipelineConfig } from "../../types";
+import type { DesignReviewIssueRecord, IssueSeverity, SessionMeta, PipelineConfig } from "../../types";
 import { severityCounts, evaluateNoProgress, computeOpenSet, type NoProgressEvaluation } from "../design-review/issue-ledger";
 import type { ReviewFixProgressLedger } from "../../types";
 import { auditAutoDiagnostic } from "./diagnostics";
@@ -240,10 +240,15 @@ export async function noteReviewRoundOutcome(input: {
   const { config, meta, session } = input;
   const records = parseReviewFindings(input.reportPath, input.round);
   const open = computeOpenSet(records);
+  const severityById: Record<string, IssueSeverity> = {};
+  for (const r of open) {
+    if (r.severity !== undefined) severityById[r.id] = r.severity;
+  }
   const next = {
     loop: "reviewFix" as const,
     openIds: open.map((r) => r.id),
     severityCounts: severityCounts(open),
+    severityById,
   };
   const prev = meta.reviewLedger;
   const activeCtx = readActiveJobContext(config.projectRoot);
@@ -261,6 +266,7 @@ export async function noteReviewRoundOutcome(input: {
     pipelineId: meta.pipelineId ?? "unknown",
     openIds: next.openIds,
     severityCounts: next.severityCounts,
+    severityById,
     streak: evaluation.streak,
   };
   session.updateMeta({ reviewLedger: ledger });

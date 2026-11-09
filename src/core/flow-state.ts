@@ -299,6 +299,11 @@ export function buildDecisionMenu(
         items.push(DECISION_LABELS.set_budget);
       }
 
+      // 229 Phase 5 (F5/R4-Q4 A): the exhaustion menu grows the degraded-pass
+      // advance (manual track's "降级放行") and the reset door (R5-Q2 A).
+      items.push(DECISION_LABELS.advance);
+      items.push(DECISION_LABELS.reset_loop_budget);
+
       // rewind_last_round offered whenever the rework gate can be derived
       const rewindGate = deriveReworkLoopGate(meta, config);
       if (rewindGate !== null) {
@@ -316,7 +321,7 @@ export function buildDecisionMenu(
     }
 
     // Other blocked reasons: standard 6-item menu (E17)
-    return [
+    const generic: string[] = [
       DECISION_LABELS.resume,
       DECISION_LABELS.skip,
       DECISION_LABELS.rollback,
@@ -324,6 +329,13 @@ export function buildDecisionMenu(
       DECISION_LABELS.abort,
       DECISION_LABELS.choose_stage,
     ];
+    // 229 Phase 5 (F5): the exhaustible loop reasons offer the degraded-pass
+    // advance + the budget reset door (R4-Q4 A / R5-Q2 A).
+    if (blockedReason === "no_progress_detected" || blockedReason === "design_review_budget_exhausted") {
+      generic.push(DECISION_LABELS.advance);
+      generic.push(DECISION_LABELS.reset_loop_budget);
+    }
+    return generic;
   }
 
   // running
@@ -356,6 +368,25 @@ export function validateBudgetValue(
   }
   if (value <= currentCycleCount) {
     return { ok: false, message: `Cannot set budget: value (${value}) must be greater than current loopCycleCount (${currentCycleCount}).` };
+  }
+  return { ok: true };
+}
+
+/**
+ * 229 (问题 1/16): numeric legality for `reset_loop_budget` — SEPARATE from
+ * `validateBudgetValue` because its baseline is the ACTUAL round access
+ * count (`designReviewRounds`), never the loop cycle count. Only RAISES the
+ * cap: the current count is never refunded.
+ */
+export function validateDesignReviewBudgetValue(
+  value: number,
+  currentRounds: number,
+): { ok: true } | { ok: false; message: string } {
+  if (!Number.isFinite(value) || value <= 0) {
+    return { ok: false, message: "Cannot reset loop budget: budgetValue must be a positive number." };
+  }
+  if (value <= currentRounds) {
+    return { ok: false, message: `Cannot reset loop budget: value (${value}) must be greater than the current designReviewRounds (${currentRounds}).` };
   }
   return { ok: true };
 }
@@ -1119,6 +1150,59 @@ export async function executeDecision(
       return { success: true, message: `Budget extended to ${budgetValue} cycles.` };
     }
 
+    case "reset_loop_budget": {
+      // 229 Phase 5 (问题 1/16 / R5-Q2 A): the re-entry-ban reset door. ONLY
+      // RAISES the cap — the current count is never refunded (monotonic; the
+      // next dispatch is not immediately exhausted) — and clears the loop's
+      // `exhaustedLoops` entry so re-entry becomes possible.
+      if (!isFrozen(meta)) {
+        return { success: false, message: "Cannot reset loop budget: pipeline is not frozen." };
+      }
+      const budgetValue = opts?.budgetValue;
+      if (budgetValue === undefined || budgetValue === null) {
+        return { success: false, message: "Cannot reset loop budget: budgetValue is required." };
+      }
+      const reason = meta.blockedReason ?? "";
+      const loop: "designReview" | "reviewFix" = reason === "design_review_budget_exhausted" || reason === "no_progress_detected"
+        ? "designReview"
+        : "reviewFix";
+      if (loop === "designReview") {
+        const currentRounds = meta.autoJob?.designReviewRounds ?? 0;
+        const verdict = validateDesignReviewBudgetValue(budgetValue, currentRounds);
+        if (!verdict.ok) return { success: false, message: verdict.message };
+        ctx.session.updateMeta({
+          ...(meta.autoJob ? { autoJob: { ...meta.autoJob, designReviewMaxRounds: budgetValue } } : {}),
+          maxLoopCycles: budgetValue,
+          exhaustedLoops: (meta.exhaustedLoops ?? []).filter((e) => e.loop !== "designReview"),
+          flowState: "running",
+          blockedReason: undefined,
+        });
+      } else {
+        const verdict = validateBudgetValue(budgetValue, meta.loopCycleCount ?? 0);
+        if (!verdict.ok) return { success: false, message: verdict.message };
+        ctx.session.updateMeta({
+          maxLoopCycles: budgetValue,
+          exhaustedLoops: (meta.exhaustedLoops ?? []).filter((e) => e.loop !== "reviewFix"),
+          flowState: "running",
+          blockedReason: undefined,
+        });
+      }
+
+      await safeWriteAuditLog("loop_budget_reset", {
+        pipelineId: meta.pipelineId,
+        stage: meta.currentStage,
+        reason,
+        loop,
+        budgetValue: String(budgetValue),
+        previousDesignReviewMaxRounds: String(meta.autoJob?.designReviewMaxRounds ?? 0),
+        ...(opts?.source ? { source: opts.source } : {}),
+        decisionSource,
+        ...(opts?.trigger ? { trigger: opts.trigger } : {}),
+      });
+      armStageWatchdog(ctx, config);
+      return { success: true, message: `Loop budget reset to ${budgetValue} (cap raised; counts kept monotonic).` };
+    }
+
     case "rewind_last_round": {
       if (!isFrozen(meta)) {
         return { success: false, message: "Cannot rewind: pipeline is not frozen." };
@@ -1183,11 +1267,188 @@ export async function executeDecision(
       return { success: true, message: `Rewound from "${prevStage}" to rework loop gate "${gate}".` };
     }
 
+    case "advance": {
+      // 229 Phase 5 (B2 path B): the review/fix LOOP exit — the degraded-pass
+      // release from review into completing the pipeline. `skip` semantics
+      // stay untouched; this branch own-count the release.
+      if (!isFrozen(meta)) {
+        return { success: false, message: "Cannot advance: the pipeline is not frozen." };
+      }
+      const { resolveExhaustionTarget } = await import("./auto-pipeline/loop-exhaustion");
+      const { parseAutoJob } = await import("./auto-pipeline/job-schema");
+      const { readActiveJobContext } = await import("./auto-pipeline/config-overlay");
+      const { docsDirsOf } = await import("../docs-paths");
+      const { buildForwardStagePatch } = await import("./stage-migration");
+      const { buildDegradedPassFromReviewLedger } = await import("./auto-pipeline/degraded-pass");
+      const { EXHAUSTION_REASON_TO_DEGRADED_REASON } = await import("./auto-pipeline/loop-exhaustion");
+
+      const fromStage = meta.currentStage;
+      const activeJob = readActiveJobContext(config.projectRoot, docsDirsOf(config).jobsDir);
+      // human track: a synthetic DEFAULTS-ONLY job (onExhausted keys absent ⇒
+      // loop defaults; the docs list is a non-entry placeholder the policy
+      // never consumes because nothing is running).
+      const parseResult = parseAutoJob(
+        ["version: 1", "enabled: false", "tier: rule", "docs:", "  list:", "    - doc: docs/design/placeholder.md"].join("\n"),
+        "manual-default",
+      );
+      const job = activeJob?.job ?? (parseResult.ok ? parseResult.job : null);
+      if (job === null) {
+        return { success: false, message: "Cannot advance: the loop-exhaustion job defaults are unavailable." };
+      }
+      const reason = meta.blockedReason ?? "";
+      const loop = reason === "design_review_budget_exhausted"
+        ? (fromStage === "design-review" ? "designReview" : null)
+        : (fromStage === "review" || fromStage === "fix" ? "reviewFix" : null);
+      if (loop === null) {
+        return { success: false, message: `Cannot advance: no exhausted loop is armed at "${fromStage}".` };
+      }
+      const configured = loop === "designReview" ? job.onExhausted?.designReview : job.onExhausted?.reviewFix;
+      if (configured === "stop") {
+        return { success: false, message: `Cannot advance for "${reason}": the loop policy is stop.` };
+      }
+      const targetResolution = resolveExhaustionTarget({
+        loop,
+        token: (loop === "designReview" ? job.onExhaustedTarget?.designReview : job.onExhaustedTarget?.reviewFix) ?? "nextStage",
+        config,
+        job,
+      });
+      if (!targetResolution.ok) {
+        await safeWriteAuditLog("exhaustion_target_loops_back", {
+          pipelineId: meta.pipelineId,
+          stage: fromStage,
+          decision: "advance",
+          reason,
+        }, "error");
+        return { success: false, message: "Cannot advance: the target loops back into the same loop (fail-closed/exhaustion_target_loops_back)." };
+      }
+      const toStage: PipelineStage = targetResolution.target;
+
+      // ── design-review loop (B2 path A): the coordinator-owned release ─────
+      if (loop === "designReview" && fromStage === "design-review") {
+        const degradedReason = EXHAUSTION_REASON_TO_DEGRADED_REASON[reason] ?? reason;
+        const { prepareDegradedRelease } = await import("./design-review/degraded-release");
+        const drState = meta.designReview;
+        if (drState === undefined) {
+          return { success: false, message: "Cannot advance: the design-review state is missing." };
+        }
+        const release = await prepareDegradedRelease({
+          session: ctx.session as unknown as Parameters<typeof prepareDegradedRelease>[0]["session"],
+          config,
+          meta,
+          drState,
+          reason: degradedReason,
+          targetStage: toStage,
+        });
+        if (!release.ok) {
+          return { success: false, message: `Cannot advance: ${release.detail} (${release.code}).` };
+        }
+        // B9/B5: the fresh develop visit is dispatched by the flow side on the
+        // owner role only; the frozen reason is consumed by this release.
+        const { invokeResumeDispatch: invoke } = await import("./resume-dispatch");
+        await invoke(ctx, config, release.freshMeta);
+        await safeWriteAuditLog("pipeline_decision", {
+          pipelineId: meta.pipelineId,
+          decision,
+          fromStage,
+          toStage,
+          reason,
+          decisionSource,
+          ...(opts?.source ? { source: opts.source } : {}),
+          ...(opts?.trigger ? { trigger: opts.trigger } : {}),
+        });
+        return { success: true, message: `Advanced from "design-review" to "${toStage}" (degraded release: exhausted "${reason}").` };
+      }
+      if (loop !== "reviewFix") {
+        return { success: false, message: `Cannot advance: loop "${loop}" is not armed at "${fromStage}".` };
+      }
+      if (toStage !== "completed" && toStage !== "awaiting_human") {
+        // The review/fix loop exits ONLY to completed/awaiting_human (B3).
+        return { success: false, message: `Cannot advance: reviewFix exit target "${toStage}" is not a loop exit.` };
+      }
+      if (toStage === "awaiting_human") {
+        // await-human exit: unfreeze + migrate, NO degradedPass record.
+        ctx.session.updateMeta({
+          ...buildForwardStagePatch({ meta, prevStage: fromStage, toStage }),
+        });
+        await safeWriteAuditLog("loop_exhausted_await_human", {
+          pipelineId: meta.pipelineId,
+          stage: fromStage,
+          decision: "advance",
+          reason,
+        }, "warn");
+        return { success: true, message: `Advanced from "${fromStage}" to "${toStage}" (await-human exit)` };
+      }
+
+      // completed exit: build the candidate WITHOUT touching state, gate it
+      // (B13), and commit ONCE after the gate allows.
+      const degradedReason = EXHAUSTION_REASON_TO_DEGRADED_REASON[reason] ?? reason;
+      const degradedPassCandidate = buildDegradedPassFromReviewLedger(meta, degradedReason, activeJob?.jobId);
+      const candidate: SessionMeta = {
+        ...meta,
+        ...buildForwardStagePatch({ meta, prevStage: fromStage, toStage: "completed" as PipelineStage }),
+        reviewPendingFail: undefined,
+        ...(degradedPassCandidate !== undefined ? { degradedPass: degradedPassCandidate } : {}),
+      };
+      const { enforceCompletionGate } = await import("./auto-pipeline/completion-gate");
+      const execFn = resolveFlowExecFn(ctx);
+      const gate = await enforceCompletionGate({
+        config,
+        meta: candidate,
+        session: ctx.session,
+        ...(execFn ? { execFn } : {}),
+        runtimeCtx: buildRoleCtxForGate(ctx),
+        ...(degradedPassCandidate !== undefined ? { pendingDegradedPass: degradedPassCandidate } : {}),
+      });
+      if (!gate.allowed) {
+        return { success: false, message: gate.message };
+      }
+      // ONE commit carries migration + the (unblocked) reviewPendingFail clear.
+      const { strictCommitMeta, expectedFromCurrent } = await import("./session-state");
+      const committed = strictCommitMeta(ctx.session, candidate, expectedFromCurrent(meta));
+      if (committed.status !== "persisted") {
+        return { success: false, message: `Cannot advance: state commit failed (${committed.status}).` };
+      }
+      if (meta.reviewPendingFail !== undefined) {
+        await safeWriteAuditLog("review_pending_fail_released_by_advance", {
+          pipelineId: meta.pipelineId,
+          stage: fromStage,
+          reason,
+        });
+      }
+      if (degradedPassCandidate !== undefined) {
+        await safeWriteAuditLog("degraded_pass_written", {
+          pipelineId: meta.pipelineId,
+          stage: fromStage,
+          reason,
+          scope: degradedPassCandidate.scope,
+        });
+      }
+      // skip's terminal semantics preserved (B12/问题 3): compact + invalidate.
+      if (ctx._ctx) {
+        await maybeCompactOnPipelineCompleted(
+          { session: ctx.session, ui: ctx.ui, _ctx: ctx._ctx },
+          config,
+        );
+      }
+      await invalidateDesignReviewAuthorization(ctx, "decision_advance");
+      await safeWriteAuditLog("pipeline_decision", {
+        pipelineId: meta.pipelineId,
+        decision,
+        fromStage,
+        toStage,
+        reason,
+        ...(opts?.source ? { source: opts.source } : {}),
+        decisionSource,
+        ...(opts?.trigger ? { trigger: opts.trigger } : {}),
+      });
+      const freshMeta = (ctx.session.getMeta() as SessionMeta | undefined) ?? meta;
+      return { success: true, message: `Advanced from "${fromStage}" to "completed" (degraded pass${degradedPassCandidate !== undefined ? ", zero blocking" : ""}).`, ...(freshMeta ? {} : {}) };
+    }
+
     default:
       return { success: false, message: `Unknown decision: "${String(decision)}".` };
   }
 }
-
 // ─── invalidateDesignReviewAuthorization ────────────────────────────────────
 
 /**

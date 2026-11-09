@@ -78,8 +78,15 @@ export function evaluateHardStop(input: {
    * config so the predicate stays total.
    */
   verifyMaxAttempts?: number;
+  /**
+   * 229 (F5/B16): the live pipeline config lets the hard-stop predicate share
+   * the loop-exhaustion resolution — a freeze that the loop policy can
+   * ADVANCE past is NOT unresolvable, so it must not hard-stop the doc
+   * before the freeze-autopilot runs.
+   */
+  config?: PipelineConfig;
 }): HardStopVerdict {
-  const { state, meta, job, now } = input;
+  const { state, meta, job, now, config } = input;
   const stop = job.stopConditions;
 
   if (stop.wallClockMs > 0 && now - state.startedAt > stop.wallClockMs) {
@@ -101,7 +108,7 @@ export function evaluateHardStop(input: {
   if (
     meta.flowState === "blocked" &&
     blockedReason &&
-    isUnresolvableFreeze({ meta, job, state, reason: blockedReason })
+    isUnresolvableFreeze({ meta, job, state, reason: blockedReason, ...(config !== undefined ? { config } : {}) })
   ) {
     // 226 Phase 3: preserve the SOURCE cause on the verdict — the doc-level
     // failReason needs `freeze_unresolvable(<blockedReason>)`.

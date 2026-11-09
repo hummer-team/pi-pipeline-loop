@@ -427,11 +427,14 @@ describe("issue195 field replay: rework loop freeze and decision exits", () => {
 
     const menu = buildDecisionMenu(frozenMeta, "max_loop_cycles", config);
 
-    // 203_Bug Phase 1: gating removed — service menu always contains all 5 items
+    // 203_Bug Phase 1: gating removed — service menu always contains all items
+    // (229 grows the loop menu with the degraded-pass advance + reset door).
     expect(menu).not.toBeNull();
-    expect(menu!.length).toBe(5);
+    expect(menu!.length).toBe(7);
     expect(menu).toContain("Set round budget");
     expect(menu).toContain("Rewind last_round");
+    expect(menu).toContain("Degraded pass (advance)");
+    expect(menu).toContain("Reset loop budget (raises the cap)");
     expect(menu).toContain("Restart & New");
     expect(menu).toContain("Abort & Exit");
     expect(menu).toContain("Resume");

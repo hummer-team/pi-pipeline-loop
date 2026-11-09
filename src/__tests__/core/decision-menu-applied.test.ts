@@ -208,18 +208,31 @@ describe("208 Phase 0: set_budget via ui.input", () => {
 // ─── 5: menu capability degradation ─────────────────────────────────────────
 
 describe("208 Phase 0: buildDecisionMenu capability filter (J1)", () => {
-  it("test 5a: with rework back-edge + input:false → 4 items, no Set round budget", () => {
+  it("test 5a: with rework back-edge + input:false → no Set round budget (229 grows the loop items)", () => {
     const meta = maxLoopMeta();
     const config = makeTestConfig();
     const menu = buildDecisionMenu(meta, "max_loop_cycles", config, { input: false });
-    expect(menu).toEqual(["Rewind last_round", "Restart & New", "Abort & Exit", "Resume"]);
+    expect(menu).toEqual([
+      "Degraded pass (advance)",
+      "Reset loop budget (raises the cap)",
+      "Rewind last_round",
+      "Restart & New",
+      "Abort & Exit",
+      "Resume",
+    ]);
   });
 
-  it("test 5b: without rework back-edge + input:false → 3 items", () => {
+  it("test 5b: without rework back-edge + input:false → 5 items", () => {
     const meta = maxLoopMeta({ stageVisitOrder: ["clarify", "plan", "develop"] });
     const config = makeTestConfig();
     const menu = buildDecisionMenu(meta, "max_loop_cycles", config, { input: false });
-    expect(menu).toEqual(["Restart & New", "Abort & Exit", "Resume"]);
+    expect(menu).toEqual([
+      "Degraded pass (advance)",
+      "Reset loop budget (raises the cap)",
+      "Restart & New",
+      "Abort & Exit",
+      "Resume",
+    ]);
   });
 
   it("default capabilities keep the historical 3-arg call shape (set_budget present)", () => {

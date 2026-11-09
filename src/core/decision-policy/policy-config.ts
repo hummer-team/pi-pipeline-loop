@@ -43,6 +43,10 @@ const POLICY_DECISIONS_BY_REASON: Record<string, ReadonlySet<PipelineDecision>> 
    * human rejected.
    */
   confirm_awaiting_human: new Set(["restart", "abort"]),
+  // 229 Phase 5 (问题 1/F5/R5-Q2 A): the exhaustible loop reasons allow the
+  // degraded-pass advance and the budget-reset door along with the escapes.
+  no_progress_detected: new Set(["advance", "reset_loop_budget", "restart", "abort"]),
+  design_review_budget_exhausted: new Set(["advance", "reset_loop_budget", "restart", "abort"]),
 };
 
 /**

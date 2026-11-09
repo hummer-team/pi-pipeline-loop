@@ -300,6 +300,19 @@ export async function coordinateDesignReview(
     return { status: "not-applicable" };
   }
 
+  // 229 Phase 5 (R5-Q2 A): the exhausted-loop RE-ENTRY ban — a design-review
+  // dispatch inside a banned loop freezes (audited) before any counting.
+  const reentryBinding = drState !== undefined && meta.currentStage === "design-review" ? "designReview" : null;
+  if (reentryBinding !== null) {
+    const { isLoopReentryBlocked, guardLoopReentry } = await import("../auto-pipeline/loop-reentry-guard");
+    if (isLoopReentryBlocked(meta, reentryBinding)) {
+      const frozenByGuard = await guardLoopReentry(ctx as never, meta, ctx.config, reentryBinding);
+      if (frozenByGuard) {
+        return { status: "handled", action: "frozen", reason: "loop_reentry_blocked" };
+      }
+    }
+  }
+
   // 219 Phase 3 §7c: count each dispatched review round exactly ONCE, at the
   // single coordination entry (deduped + monotonic — a rewind never refunds a
   // counted round). `noteDesignReviewDispatch` writes ONLY `meta.autoJob`, so

@@ -1912,6 +1912,20 @@ export function createStageAdvancer(config: PipelineConfig, deps?: StageAdvancer
         // rule would otherwise keep the old `index`/`enteredAt`, so a PASS report
         // written before the re-entry could still satisfy the freshness baseline.
         if (currentStage === "review") {
+          // 229 Phase 5 (R5-Q2 A): the exhausted-loop RE-ENTRY ban — an
+          // explicit re-entry into a banned review loop freezes (audited).
+          const { loopBinding, guardLoopReentry } = await import("./auto-pipeline/loop-reentry-guard");
+          const loop = loopBinding(config, meta, currentStage);
+          if (loop !== null) {
+            const banned = await guardLoopReentry(ctx as never, meta, config, loop);
+            if (banned) {
+              return {
+                success: false,
+                message: `Stage "${currentStage}" re-entry is blocked: the loop is exhausted (loop_reentry_blocked). Reset the loop budget to continue.`,
+                currentStage,
+              };
+            }
+          }
           ensureReviewRound(
             { ...meta, stageStartTime: nextStageStart, summaries: restSummaries },
             ctx.session,

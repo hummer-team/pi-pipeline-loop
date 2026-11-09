@@ -165,6 +165,8 @@ describe("buildDecisionMenu", () => {
       // remains — first item must be Set round budget (menu-order acceptance).
       expect(menu).toEqual([
         "Set round budget",
+        "Degraded pass (advance)",
+        "Reset loop budget (raises the cap)",
         "Rewind last_round",
         "Restart & New",
         "Abort & Exit",
@@ -188,6 +190,8 @@ describe("buildDecisionMenu", () => {
       const menu = buildDecisionMenu(meta, "max_loop_cycles", templateChainConfig);
       expect(menu).toEqual([
         "Set round budget",
+        "Degraded pass (advance)",
+        "Reset loop budget (raises the cap)",
         "Rewind last_round",
         "Restart & New",
         "Abort & Exit",
@@ -209,6 +213,8 @@ describe("buildDecisionMenu", () => {
       const menu = buildDecisionMenu(meta, "max_loop_cycles", templateChainConfig);
       expect(menu).toEqual([
         "Set round budget",
+        "Degraded pass (advance)",
+        "Reset loop budget (raises the cap)",
         "Rewind last_round",
         "Restart & New",
         "Abort & Exit",
@@ -230,6 +236,8 @@ describe("buildDecisionMenu", () => {
       const menu = buildDecisionMenu(meta, "max_loop_cycles", templateChainConfig);
       expect(menu).toEqual([
         "Set round budget",
+        "Degraded pass (advance)",
+        "Reset loop budget (raises the cap)",
         "Rewind last_round",
         "Restart & New",
         "Abort & Exit",
@@ -250,6 +258,8 @@ describe("buildDecisionMenu", () => {
       const menu = buildDecisionMenu(meta, "max_loop_cycles", templateChainConfig);
       expect(menu).toEqual([
         "Set round budget",
+        "Degraded pass (advance)",
+        "Reset loop budget (raises the cap)",
         "Restart & New",
         "Abort & Exit",
         "Resume",
@@ -271,6 +281,8 @@ describe("buildDecisionMenu", () => {
       const menu = buildDecisionMenu(meta, "max_loop_cycles", templateChainConfig);
       expect(menu).toEqual([
         "Set round budget",
+        "Degraded pass (advance)",
+        "Reset loop budget (raises the cap)",
         "Rewind last_round",
         "Restart & New",
         "Abort & Exit",
