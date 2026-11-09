@@ -232,4 +232,20 @@ describe("229 Phase 4: design-review loop no-progress (coordinator)", () => {
     expect(after.progressLedger?.loop).toBe("designReview");
     expect(after.progressLedger?.streak).toBe(0);
   });
+
+  it("the persisted ledger carries severityById so the loop-exit release can bind the carry-over", async () => {
+    // Regression: the loop-exit degraded release projects `severityById` into
+    // the carry-over record and fails closed when a severity is missing. The
+    // coordinator must therefore PERSIST that map — a ledger with only
+    // `severityCounts` makes every design-review advance refuse.
+    writeReport(1, REVIEW_OP_ID, ["DR-1-1", "DR-1-2"]);
+    const ctx = createCoordinatorCtx(reviewRunningMeta(1, REVIEW_OP_ID));
+    const r = await coordinateDesignReview(ctx, ctx.session.getMeta()!, "settle");
+    expect(r.status === "handled" && r.action === "routed").toBe(true);
+
+    const ledger = ctx.session.getMeta()!.designReview!.progressLedger!;
+    expect(ledger.openIds).toEqual(["DR-1-1", "DR-1-2"]);
+    // Every open id carries its resolved severity (the release never fabricates).
+    expect(Object.keys(ledger.severityById ?? {}).sort()).toEqual(["DR-1-1", "DR-1-2"]);
+  });
 });

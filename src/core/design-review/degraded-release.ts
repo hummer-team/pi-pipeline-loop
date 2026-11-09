@@ -64,6 +64,34 @@ export type DegradedReleaseResult =
   | { ok: false; code: "degraded_release_unbound" | "release_commit_failed"; detail: string };
 
 /**
+ * repair severities for `ids` from a report's `## Issues` body.
+ *
+ * Returns `undefined` when the report is unreadable (the caller then decides
+ * whether that is a refusal). Only DECLARED severities are returned — a missing
+ * one is never fabricated (`prepareDegradedRelease` fails closed on it).
+ */
+function repairSeveritiesFromReport(
+  ids: readonly string[],
+  reportPath: string,
+  round: number,
+): Map<string, DesignReviewIssueRecord> | undefined {
+  let content: string;
+  try {
+    content = fs.readFileSync(reportPath, "utf-8");
+  } catch {
+    return undefined;
+  }
+  const parsed = parseIssuesSection(
+    extractReportSection(
+      stripInertLines(content),
+      compileHeadingRe(undefined, DEFAULT_ISSUE_HEADING_PATTERN),
+    )?.lines ?? [],
+    round,
+  );
+  return new Map(parsed.map((r) => [r.id, r]));
+}
+
+/**
  * resolve the carried open set.
  *
  * Precedence: the design-review progress ledger (the authoritative cross-round
@@ -72,6 +100,11 @@ export type DegradedReleaseResult =
  * the REAL records: an empty projection would silently drop every carry-over
  * and make the loop-exit `degradedPass` (and its downstream visibility)
  * unreachable.
+ *
+ * A ledger persisted BEFORE the per-issue map existed carries no
+ * `severityById`; its severities are repaired from the consumed report (exactly
+ * like the receipt path) instead of failing closed, so an in-flight pipeline is
+ * never stranded by the upgrade. A genuinely absent severity still refuses.
  */
 function resolveOpenIssues(
   drState: DesignReviewState,
@@ -79,10 +112,11 @@ function resolveOpenIssues(
 ): { records: DesignReviewIssueRecord[]; bound: boolean } {
   const ledger = drState.progressLedger;
   if (ledger !== undefined) {
-    // Severities come from the ledger's per-issue map; the ledger itself never
-    // fabricates one (missing severity stays missing — see `prepareDegradedRelease`).
+    const legacyRepair = ledger.severityById === undefined
+      ? repairSeveritiesFromReport(ledger.openIds, reportPath, ledger.round)
+      : undefined;
     const records: DesignReviewIssueRecord[] = ledger.openIds.map((id) => {
-      const severity = ledger.severityById?.[id];
+      const severity = ledger.severityById?.[id] ?? legacyRepair?.get(id)?.severity;
       return {
         id,
         origin: String(ledger.round),
@@ -97,21 +131,10 @@ function resolveOpenIssues(
   if (issueIds === undefined || issueIds.length === 0) {
     return { records: [], bound: false };
   }
-  // Repair severities from the PREVIOUS round's report snapshot.
-  let content: string | undefined;
-  try {
-    content = fs.readFileSync(reportPath, "utf-8");
-  } catch {
+  const byId = repairSeveritiesFromReport(issueIds, reportPath, drState.round - 1);
+  if (byId === undefined) {
     return { records: issueIds.map((id) => ({ id, origin: "", text: "unresolved carried issue" })), bound: true };
   }
-  const parsed = parseIssuesSection(
-    extractReportSection(
-      stripInertLines(content),
-      compileHeadingRe(undefined, DEFAULT_ISSUE_HEADING_PATTERN),
-    )?.lines ?? [],
-    drState.round - 1,
-  );
-  const byId = new Map(parsed.map((r) => [r.id, r]));
   const records = issueIds.map((id) => byId.get(id) ?? { id, origin: "", text: "unresolved carried issue" });
   return { records, bound: true };
 }

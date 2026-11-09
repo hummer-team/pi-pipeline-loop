@@ -29,7 +29,7 @@ import { extractReportIssues } from "./report";
 import { runVerification, type VerificationRunResult } from "../auto-verifier";
 import { stageMigrationResetCounters } from "../stage-exit/migration-reset";
 import type { RunVerificationOptions } from "../auto-verifier";
-import type { DesignReviewPauseReason, DesignReviewProgressLedger, DesignReviewIssueRecord } from "../../types";
+import type { DesignReviewPauseReason, DesignReviewProgressLedger, DesignReviewIssueRecord, IssueSeverity } from "../../types";
 
 import {
   buildDesignReviewSmartPrompt,
@@ -851,6 +851,14 @@ async function noteDesignReviewNoProgress(
   const open = computeOpenSet(records);
   const openIds = open.map((r) => r.id);
   const counts = severityCounts(open);
+  // The per-issue severity map MUST ride the ledger: the loop-exit degraded
+  // release projects it into the carry-over record, and a missing severity is
+  // fail-closed there (never fabricated). Ids without a declared severity stay
+  // absent — the release refuses rather than understating the risk.
+  const severityById: Record<string, IssueSeverity> = {};
+  for (const r of open) {
+    if (r.severity !== undefined) severityById[r.id] = r.severity;
+  }
   const docKey = resolveSidecarDocKey(ctx);
   const activeCtx = readActiveJobContext(ctx.config.projectRoot, docsDirsOf(ctx.config).jobsDir);
   const graceUsed = activeCtx !== null
@@ -890,6 +898,7 @@ async function noteDesignReviewNoProgress(
     pipelineId: meta.pipelineId,
     openIds,
     severityCounts: counts,
+    severityById,
     streak: evaluation.streak,
   };
   drState.progressLedger = ledger;
