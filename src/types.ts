@@ -1707,6 +1707,13 @@ export type DesignReviewVerificationOutcome =
        * must compare this hash too. Legacy (embedded-section) updates omit it.
        */
       receiptHash?: string;
+      /**
+       * 229 Phase 3 (B14): the MECHANICALLY-verified declared scope from the
+       * receipt (`### Changes Made`). Present only when the baseline-section
+       * run executed (F3); the coordinator persists it once as
+       * `designReview.lastDeclaredScope` after the transition commits.
+       */
+      declaredScope?: { phases: number[]; sections: string[] };
     }
   | { kind: "invalid"; failures: readonly VerifyFailureItem[] }
   | { kind: "paused"; reason: DesignReviewPauseReason };

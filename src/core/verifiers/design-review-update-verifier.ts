@@ -57,9 +57,12 @@ import {
   hasPhaseLocationMarker,
   contentLines,
   parseDispositionRows,
+  parseChangesMadeLocations,
+  parseChangesMadeIssueLinks,
   RECEIPT_IDENTITY_FIELDS,
   type UpdateSectionSpan,
 } from "../design-review/update-receipt";
+import { computeSectionHashes, diffSectionHashes } from "../design-review/section-hashes";
 import { computeBaselineSectionsHash, extractLegacyUpdateSections } from "../design-review/update-artifact";
 
 /**
@@ -127,6 +130,14 @@ export interface DesignReviewUpdateValidationInput {
   pipelineId?: string;
   /** 194 C2: plan document path a standalone receipt must name. */
   planDoc?: string;
+  /**
+   * 229 Phase 3 (F3/B15): hashes of ALL top-level `##` plan sections captured
+   * BEFORE the update (preparation-time baseline). Optional for backward
+   * compatibility — absent ⇒ the mechanical scope check degrades to the
+   * legacy aggregate Phase-location check (and audits
+   * `update_receipt_legacy_binding` at the caller).
+   */
+  baselineSectionHashes?: Record<string, string>;
 }
 
 export type DesignReviewUpdateVerdict =
@@ -141,9 +152,28 @@ export type DesignReviewUpdateVerdict =
        * longer describes the update's full output.
        */
       receiptHash?: string;
+      /**
+       * 229 Phase 3 (F3/问题 20): structured declared-vs-actual scope. Present
+       * only when `baselineSectionHashes` was supplied (mechanical check ran).
+       */
+      scope?: UpdateScopeEvidence;
     }
-  | { status: "invalid"; failures: string[] }
+  | {
+      status: "invalid";
+      failures: string[];
+      /** 229 Phase 3 (问题 20): scope evidence attached to scope failures. */
+      scope?: UpdateScopeEvidence;
+    }
   | { status: "paused"; reason: "no-change" | "new-decision"; detail?: string };
+
+/** 229 Phase 3 (B14): declared/changed/undeclared scope keys. */
+export interface UpdateScopeEvidence {
+  declared: { phases: number[]; sections: string[] };
+  changed: string[];
+  undeclared: string[];
+  /** 229 Phase 3: legacy mode (no baseline hashes ⇒ aggregate check only). */
+  legacy?: boolean;
+}
 
 /** Dispositions that advance the loop */
 const ADVANCE_DISPOSITIONS = new Set(["fixed", "deferred", "rejected"]);
@@ -190,14 +220,14 @@ function collectDispositions(
   lines: readonly string[],
   issueIds: readonly string[],
   failures: string[]
-): Map<string, { count: number; disposition: string; justification: string }> {
+): Map<string, { count: number; disposition: string; justification: string; legacyRowId?: string }> {
   const rows = parseDispositionRows(lines);
   if (rows.length === 0) {
     failures.push("no disposition rows found in the current update section");
   }
 
   const expected = new Set(issueIds);
-  const seen = new Map<string, { count: number; disposition: string; justification: string }>();
+  const seen = new Map<string, { count: number; disposition: string; justification: string; legacyRowId?: string }>();
   for (const row of rows) {
     let resolvedId = row.issueId;
     if (!expected.has(resolvedId)) {
@@ -220,7 +250,14 @@ function collectDispositions(
     }
     const prev = seen.get(resolvedId);
     if (prev) prev.count += 1;
-    else seen.set(resolvedId, { count: 1, disposition: row.disposition, justification: row.justification });
+    else seen.set(resolvedId, {
+      count: 1,
+      disposition: row.disposition,
+      justification: row.justification,
+      // 229 Phase 3 (B18): keep the raw row id so per-issue `### Changes Made`
+      // binding ALSO matches rows written in the legacy numeric form.
+      ...(resolvedId !== row.issueId ? { legacyRowId: row.issueId } : {}),
+    });
   }
 
   for (const id of expected) {
@@ -340,15 +377,65 @@ function validateStandaloneReceipt(
   // ── Changes Made: required, and `fixed` must cite a Phase location ────────
   const changesBlock = findSubBlock(section.lines, CHANGES_MADE_HEADING);
   const changeEntries = changesBlock ? contentLines(changesBlock.lines) : [];
+  let scopeEvidence: UpdateScopeEvidence | undefined;
   if (changeEntries.length === 0) {
     failures.push("standalone update receipt has no `### Changes Made` entries");
-  } else {
+  } else if (input.baselineSectionHashes === undefined) {
+    // LEGACY receipt (229 Phase 3): aggregated check only; the caller audits
+    // update_receipt_legacy_binding when the verdict reports this mode.
     const anyFixed = [...seen.values()].some((e) => e.disposition === "fixed");
     if (anyFixed && !hasPhaseLocationMarker(changeEntries)) {
       failures.push(
         "a `fixed` disposition requires the actual plan Phase location in `### Changes Made` (e.g. \"Phase 3\")"
       );
     }
+    scopeEvidence = { declared: { phases: [], sections: [] }, changed: [], undeclared: [], legacy: true };
+  } else {
+    // ── 229 Phase 3 (F3): mechanical declared-vs-actual scope ─────────────
+    const declared = parseChangesMadeLocations(changeEntries);
+    const perIssueLinks = parseChangesMadeIssueLinks(changeEntries);
+    const linkByIssue = new Map(perIssueLinks.map((l) => [l.issueId, l]));
+    const current = computeSectionHashes(input.planContent);
+    const diff = diffSectionHashes(input.baselineSectionHashes, current);
+    const actuallyChanged = [...diff.changed, ...diff.added, ...diff.removed];
+    const declaredKeys = new Set<string>([
+      ...declared.phases.map((p) => `phase:${String(p)}`),
+      ...declared.sections.map((s) => `section:${s}`),
+    ]);
+    const undeclared = actuallyChanged.filter((k) => !declaredKeys.has(k));
+    if (undeclared.length > 0) {
+      failures.push(
+        `scope_violation — sections changed outside the declared scope: ${undeclared.join(", ")}`,
+      );
+    }
+    for (const key of declaredKeys) {
+      if (!actuallyChanged.includes(key)) {
+        failures.push(`declared_but_unchanged — "${key}" was declared but its section hash did not change`);
+      }
+    }
+    // per-issue binding (replaces the aggregated check): EVERY `fixed` row
+    // needs a Changes Made entry citing its own id with a location declared
+    // in the scope.
+    for (const [issueId, entry] of seen) {
+      if (entry.disposition !== "fixed") continue;
+      const link = linkByIssue.get(issueId) ?? (entry.legacyRowId !== undefined ? linkByIssue.get(entry.legacyRowId) : undefined);
+      if (!link) {
+        failures.push(
+          `issue "${issueId}" is fixed but \`### Changes Made\` has no entry citing its own stable id (per-issue binding)`,
+        );
+        continue;
+      }
+      const locationDeclared =
+        link.phases.length > 0
+          ? link.phases.every((p) => declared.phases.includes(p))
+          : declared.sections.length > 0;
+      if (!locationDeclared) {
+        failures.push(
+          `issue "${issueId}" fix location is outside the declared scope (Phase ∈ declared set required)`,
+        );
+      }
+    }
+    scopeEvidence = { declared: { phases: declared.phases, sections: declared.sections }, changed: actuallyChanged, undeclared };
   }
 
   // ── Plan body must NOT gain/update a protocol section (C1 baseline) ───────
@@ -363,7 +450,7 @@ function validateStandaloneReceipt(
   }
 
   if (failures.length > 0) {
-    return { status: "invalid", failures };
+    return { status: "invalid", failures, ...(scopeEvidence !== undefined ? { scope: scopeEvidence } : {}) };
   }
 
   // Sentinel pause takes precedence over ready (owner decision required).
@@ -382,6 +469,7 @@ function validateStandaloneReceipt(
     newPlanHash,
     disposedIssueIds: [...seen.keys()],
     receiptHash: computePlanHash(receiptContent),
+    ...(scopeEvidence !== undefined ? { scope: scopeEvidence } : {}),
   };
 }
 

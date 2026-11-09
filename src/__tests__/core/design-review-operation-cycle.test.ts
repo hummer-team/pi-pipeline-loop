@@ -232,7 +232,12 @@ describe("192 Phase 1: single-session operation cycle (F01 capture)", () => {
             justification: "expanded the specification",
           },
         ],
-        changesMade: ["- Phase 1: new error handling section; expanded specification."],
+        changesMade: [
+          // 229 Phase 3 (F3/B15): the fixture declares the ACTUALLY-changed
+          // section (per-issue binding: `- <stable id>: <location> — change`).
+          "- DR-1-1: section:Approach — new error handling section.",
+          "- DR-1-2: section:Approach — expanded specification detail.",
+        ],
       }),
       "utf-8",
     );

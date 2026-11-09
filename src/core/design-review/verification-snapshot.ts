@@ -143,6 +143,8 @@ export type UpdateSnapshotEvaluation =
 export function evaluateUpdateSnapshots(
   ctx: UpdateContext,
   set: DesignReviewSnapshotSet,
+  /** 229 Phase 3 (B14): preparation-time section-hash baseline (F3 mechanical scope check). */
+  options?: { baselineSectionHashes?: Record<string, string> },
 ): UpdateSnapshotEvaluation {
   if (!ctx.output.ok) {
     return {
@@ -193,6 +195,9 @@ export function evaluateUpdateSnapshots(
       ...(output !== undefined ? { output } : {}),
       pipelineId: ctx.pipelineId,
       planDoc: ctx.planDoc,
+      ...(options?.baselineSectionHashes !== undefined
+        ? { baselineSectionHashes: options.baselineSectionHashes }
+        : {}),
     },
   };
 }

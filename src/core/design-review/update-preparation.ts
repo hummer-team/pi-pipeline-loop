@@ -42,6 +42,7 @@ import {
   type DesignReviewUpdateTemplateSelection,
 } from "./prompt";
 import { computeUpdateInputHash } from "./state";
+import { computeSectionHashes } from "./section-hashes";
 import { prepareDesignReviewOperation } from "./dispatch";
 import { findWriteScopeConflicts } from "./write-policy";
 import { resolveProtectConfig } from "../../utils/protect";
@@ -56,6 +57,14 @@ export interface UpdateDispatchCandidate {
   prompt: string;
   /** Input hash bound to the candidate (baseline plan + report + issue ids). */
   inputHash: string;
+  /**
+   * 229 Phase 3 (F3/B15): hashes of ALL top-level `##` sections of the plan
+   * AS READ AT PREPARATION TIME (pre-update). The coordinator commits it as
+   * `designReview.updateBaselineSectionHashes` in the SAME strict commit as
+   * the operation; the update verifier consumes it for the mechanical
+   * declared-scope check.
+   */
+  baselineSectionHashes: Record<string, string>;
   /** Plugin-derived absolute receipt document this update must produce. */
   receiptDoc: string;
   /** The pinned descriptor itself (for commit + audit). */
@@ -90,11 +99,10 @@ export interface UpdatePreparationRequest {
   /** Stage visit the candidate operation is bound to (fresh plan visit). */
   stageVisitId: number;
 }
-
 /** Step 1+2: baseline read + C1 descriptor pinning. */
 async function pinUpdateCandidate(
   req: UpdatePreparationRequest,
-): Promise<{ ok: true; operation: DesignReviewOperation; artifact: StandaloneUpdateArtifact; inputHash: string } | { ok: false; reason: string; detail: string }> {
+): Promise<{ ok: true; operation: DesignReviewOperation; artifact: StandaloneUpdateArtifact; inputHash: string; baselineSectionHashes: Record<string, string> } | { ok: false; reason: string; detail: string }> {
   const { baseState } = req;
 
   // The baseline digest must describe the plan as it is RIGHT NOW: the
@@ -127,6 +135,11 @@ async function pinUpdateCandidate(
     return { ok: false, reason: "operation_creation_failed", detail: "prepareDesignReviewOperation returned undefined" };
   }
 
+  // 229 Phase 3 (F3/B15): the mechanical scope baseline is derived from the
+  // SAME plan bytes this preparation read (pre-update state) and travels on
+  // the candidate so the coordinator can commit it with the operation.
+  const baselineSectionHashes = computeSectionHashes(planContent);
+
   const artifact = createStandaloneUpdateArtifact(
     baseState.planDoc,
     baseState.round,
@@ -146,6 +159,7 @@ async function pinUpdateCandidate(
   return {
     ok: true,
     inputHash,
+    baselineSectionHashes,
     artifact,
     operation: {
       ...operation,
@@ -271,6 +285,7 @@ export async function prepareUpdateDispatch(
       operation: pinned.operation,
       prompt: rendered.prompt,
       inputHash: pinned.inputHash,
+      baselineSectionHashes: pinned.baselineSectionHashes,
       receiptDoc: pinned.artifact.receiptDoc,
       artifact: pinned.artifact,
       selection: rendered.selection,

@@ -1282,6 +1282,9 @@ async function handleFail(
       recordedAt: Date.now(),
     },
     reviewInputReceipt: inputReceipt,
+    // 229 Phase 3 (F3/B15): the preparation-time section-hash baseline rides
+    // in the SAME strict commit (it describes the PRE-update plan bytes).
+    updateBaselineSectionHashes: prepared.candidate.baselineSectionHashes,
     updatedAt: Date.now(),
   };
 
@@ -2355,8 +2358,13 @@ async function handleUpdateReady(
   const preparedOp = prepared.candidate.operation;
   const updatePrompt = prepared.candidate.prompt;
 
-  // Commit operation (this also transitions to update_running)
-  const committedState = commitDesignReviewOperation(ctx.session, preparedOp, drState);
+  // Commit operation (this also transitions to update_running). 229 Phase 3:
+  // the preparation-time section-hash baseline rides in the SAME commit.
+  const committedState = commitDesignReviewOperation(
+    ctx.session,
+    preparedOp,
+    { ...drState, updateBaselineSectionHashes: prepared.candidate.baselineSectionHashes },
+  );
   if (!committedState) {
     return { status: "handled", action: "pending", reason: "operation_commit_failed" };
   }
@@ -2593,6 +2601,9 @@ async function handleUpdateRunning(
   // One consistent target state: next round, new plan hash, new report doc,
   // review_running with the fresh operation. The consumed update operation is
   // replaced; its terminal fact is the plan change (newPlanHash) itself.
+  // 229 Phase 3 (B14): the mechanically-verified declared scope rides in the
+  // SAME strict commit (`lastDeclaredScope`) — the next review round's
+  // findings directive renders from it; a failed validation never writes it.
   const stateWithOperation: DesignReviewState = {
     ...drState,
     phase: "review_running",
@@ -2600,6 +2611,9 @@ async function handleUpdateRunning(
     planHash: currentPlanHash,
     reportDoc: deriveReportPath(drState.planDoc, nextRound),
     operation: preparedReviewOp,
+    ...(outcome.declaredScope !== undefined
+      ? { lastDeclaredScope: { phases: [...outcome.declaredScope.phases], sections: [...outcome.declaredScope.sections] } }
+      : {}),
     // Round-scoped transients cleared for the NEW round; authorization and
     // budget are preserved (Phase 4 task 8 semantics).
     outcome: undefined,

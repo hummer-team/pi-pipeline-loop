@@ -511,6 +511,10 @@ export function makeChainHarness(opts?: ChainHarnessOptions): ChainHarness {
       if (userMessage !== undefined) branchUserMessage = userMessage;
       await hook.handler(hookCtx as never);
       await flush();
+      const dbgMeta = session.getMeta()!;
+      if ((globalThis as Record<string, unknown>).__chainDebug === true) {
+        console.log(`[chain-debug] stage=${dbgMeta.currentStage} dr=${dbgMeta.designReview?.phase}/${dbgMeta.designReview?.pauseReason} fails=${JSON.stringify(dbgMeta.verifyFailures?.slice(-3) ?? [])}`);
+      }
     },
     flush,
     emitTerminal: (event, agentId) => {

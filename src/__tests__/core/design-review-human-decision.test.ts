@@ -665,7 +665,10 @@ describe("193 Phase 2: human decision menu flow (coordinator)", () => {
       pipelineId: session.getMeta()!.pipelineId ?? "unknown",
       issueText: () => "Missing rollback plan for the migration phase",
       justification: () => "added rollback coverage",
-      changesMade: ["- Phase 1: new rollback coverage section."],
+      changesMade: [
+        // 229 Phase 3 (F3/B15): own-id per-issue binding + declared section.
+        `- ${updateDr.reviewInputReceipt?.issueIds[0] ?? "DR-1-1"}: section:Approach — new rollback coverage section.`,
+      ],
     });
 
     const r3 = await coordinateDesignReview(ctx, session.getMeta()!, "settle");

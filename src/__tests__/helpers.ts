@@ -665,7 +665,12 @@ export function writeStandaloneUpdateDeliverables(opts: {
       })),
       changesMade:
         opts.changesMade ??
-        receipt.issueIds.map((issueId) => `- Phase 1: amended the section for defect ${issueId}.`),
+        receipt.issueIds.map(
+          // 229 Phase 3 (F3/B15): the default revision declares the section its
+          // default plan body actually touches (`## Approach`) and cites the
+          // OWN stable id (per-issue binding).
+          (issueId) => `- ${issueId}: section:Approach — amended the section for defect ${issueId}.`,
+        ),
     }),
     "utf-8",
   );

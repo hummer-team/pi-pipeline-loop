@@ -263,7 +263,90 @@ export const RECEIPT_IDENTITY_FIELDS = {
  */
 const PHASE_LOCATION_RE = /(phase\s*\d+|阶段\s*\d+)/i;
 
+// 229 Phase 3 (B15): a `### Changes Made` entry may also declare a NON-Phase
+// top-level section by its title (`section:<title>`; B15 全章节覆盖). The
+// regex stays LOCAL to this module (single source, reused by
+// parseChangesMadeLocations below). The title is bounded by the natural
+// entry separators (dash/pipe/comma/colon) so trailing prose never leaks in.
+const SECTION_LOCATION_RE = /section[:：]\s*([^，。,;|—\-]+?)(?=\s*(?:—|–|,|;|\||$))/i;
+
+/** Global form of the SAME Phase-location pattern (single source). */
+const PHASE_LOCATION_RE_GLOBAL = /(?:phase|阶段)\s*[:：\-—]?\s*(\d+)/gi;
+
+/** Extract the DISTINCT Phase numbers declared on these lines (order-fixed). */
+function extractPhaseNumbers(line: string, sink: number[], seen: Set<number>): void {
+  for (const m of line.matchAll(PHASE_LOCATION_RE_GLOBAL)) {
+    if (m[1] !== undefined && !seen.has(Number(m[1]))) {
+      seen.add(Number(m[1]));
+      sink.push(Number(m[1]));
+    }
+  }
+}
+
 /** Any list/table entry mentioning a concrete plan Phase location. */
 export function hasPhaseLocationMarker(lines: readonly string[]): boolean {
   return lines.some((line) => PHASE_LOCATION_RE.test(line));
+}
+
+/** 229 Phase 3 (B14): the DECLARED update scope, parsed from the receipt. */
+export interface DeclaredUpdateScope {
+  phases: number[];
+  sections: string[];
+}
+
+/**
+ * 229 Phase 3 (F3/task 3): parse the DECLARED scope from `### Changes Made`
+ * entries. Accepts the same bilingual "Phase <n>" markers as
+ * `hasPhaseLocationMarker` PLUS the `section:<title>` form for non-Phase
+ * top-level sections (B15). Pure; order follows the first declaration.
+ */
+export function parseChangesMadeLocations(lines: readonly string[]): DeclaredUpdateScope {
+  const phases: number[] = [];
+  const sections: string[] = [];
+  const seenPhase = new Set<number>();
+  const seenSection = new Set<string>();
+  for (const line of lines) {
+    extractPhaseNumbers(line, phases, seenPhase);
+    const sectionMatch = SECTION_LOCATION_RE.exec(line);
+    if (sectionMatch && sectionMatch[1] !== undefined) {
+      const title = sectionMatch[1].trim().replace(/[，。,;|]+$/, "").trim();
+      if (title !== "" && !seenSection.has(title)) {
+        seenSection.add(title);
+        sections.push(title);
+      }
+    }
+  }
+  return { phases, sections };
+}
+
+/** 229 Phase 3 (F3/task 3): one `- <issueId>: <phase note>` entry. */
+export interface ChangesMadeIssueLink {
+  /** Stable issue id (e.g. `DR-2-1`, legacy numeric ids stay as-is). */
+  issueId: string;
+  /** Declared Phase numbers of the entry's location note. */
+  phases: number[];
+}
+
+/**
+ * 229 Phase 3 (F3/task 3): parse the per-issue `Changes Made` links
+ * (`- DR-2-1: Phase 3 — …`). Pure.
+ */
+export function parseChangesMadeIssueLinks(lines: readonly string[]): ChangesMadeIssueLink[] {
+  const links: ChangesMadeIssueLink[] = [];
+  const entryRe = /^\s*(?:[-*+]|\d+[.)])\s+(.+)$/;
+  const idRe = /^(-?[A-Za-z0-9]+-?-?\d*(?:-\d+)*|[A-Za-z]+-\d+)[:：]\s*(.+)$/;
+  for (const line of lines) {
+    const e = entryRe.exec(line);
+    if (!e || e[1] === undefined) continue;
+    const text = e[1].trim();
+    const idMatch = idRe.exec(text);
+    if (!idMatch || idMatch[1] === undefined || idMatch[2] === undefined) continue;
+    const issueId = idMatch[1].trim();
+    const note = idMatch[2];
+    const phases: number[] = [];
+    const seen = new Set<number>();
+    extractPhaseNumbers(note, phases, seen);
+    links.push({ issueId, phases });
+  }
+  return links;
 }

@@ -577,7 +577,11 @@ async function computeDesignReviewDomainOutcome(
   // binding is interpreted, so "missing receipt" can never degrade into
   // "back-fill the receipt from the plan body".
   const set = capture ?? (await captureDesignReviewSnapshots(ctx));
-  const evaluated = evaluateUpdateSnapshots(ctx, set);
+  // 229 Phase 3 (B14): the preparation-time section-hash baseline drives the
+  // mechanical scope check; absent (legacy update) ⇒ aggregate check only.
+  const evaluated = evaluateUpdateSnapshots(ctx, set, {
+    baselineSectionHashes: meta.designReview?.updateBaselineSectionHashes,
+  });
   if (!evaluated.ok) {
     return {
       kind: "invalid",
@@ -589,6 +593,27 @@ async function computeDesignReviewDomainOutcome(
   // attribution (snapshot hash vs receipt reportHash + declared **operation**
   // vs the consumed review identity) is enforced inside the evaluator.
   const verdict = validateDesignReviewUpdate(evaluated.input);
+  // 229 Phase 3 (F3): scope audits (auto-verifier is the ONLY writer here —
+  // it never touches meta; B9/B17).
+  if (verdict.status === "invalid" && verdict.scope?.legacy === true) {
+    await safeWriteAuditLog("update_receipt_legacy_binding", {
+      pipelineId: ctx.pipelineId,
+      stage: "design-review",
+      round: String(ctx.round),
+      reason: "baseline_section_hashes_missing",
+    }, "info");
+  }
+  if (verdict.status === "invalid" && (verdict.scope?.undeclared.length ?? 0) > 0) {
+    await safeWriteAuditLog("scope_violation", {
+      pipelineId: ctx.pipelineId,
+      stage: "design-review",
+      round: String(ctx.round),
+      declaredPhases: verdict.scope !== undefined ? verdict.scope.declared.phases.map(String).join(",") : "",
+      changedSections: verdict.scope !== undefined ? verdict.scope.changed.join(",") : "",
+      undeclared: verdict.scope !== undefined ? verdict.scope.undeclared.join(",") : "",
+    });
+  }
+  void verdict;
   if (verdict.status === "invalid") {
     return {
       kind: "invalid",
@@ -612,6 +637,9 @@ async function computeDesignReviewDomainOutcome(
     // 194 C2: the plan hash alone no longer describes the update's output —
     // the standalone receipt hash rides along for pre-advance revalidation.
     ...(verdict.receiptHash !== undefined ? { receiptHash: verdict.receiptHash } : {}),
+    // 229 Phase 3 (B14): the declared set for the coordinator's
+    // `lastDeclaredScope` persistence (the next review round's directive).
+    ...(verdict.scope !== undefined ? { declaredScope: { phases: verdict.scope.declared.phases, sections: verdict.scope.declared.sections } } : {}),
   };
 }
 
