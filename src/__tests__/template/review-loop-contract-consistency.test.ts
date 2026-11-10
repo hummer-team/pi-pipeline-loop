@@ -15,8 +15,13 @@
  *     PIPELINE AUTOMATION RULES assertions stay in template-defaults.test.ts.
  *
  * Scope: structure and semantic markers only — prose wording stays free so the
- * assets can be re-written without breaking this suite. Pure `fs` + `yaml`,
- * no runtime imports.
+ * assets can be re-written without breaking this suite. Content assertions use
+ * pure `fs` + `yaml` only. The one runtime import is allowed on purpose: the
+ * plan-review artifact name is asserted against the REAL derivation
+ * (`core/naming/doc-naming`) so the guard cannot drift with a hand-typed
+ * string, and that module is a pure-function naming layer (no I/O, no state).
+ * No other runtime module may be imported here, and the suite never reads
+ * `.opencode` / `.pi`.
  */
 
 import { describe, it, expect } from "bun:test";
@@ -95,6 +100,27 @@ describe("230 Phase 5: review-loop contract consistency (template)", () => {
       expect(artifact).toContain("CR-<round>-");
       expect(artifact).toContain("Issue Ledger");
     }
+  });
+
+  it("keeps the code-review report template code block in step with the review skill fields", () => {
+    // CR-3-1: the agent copies the template's code block verbatim, so a field
+    // the skill requires but the block omits is silently lost from every round
+    // report. The block itself (not just the surrounding prose) must carry the
+    // same field set the review skill asks for.
+    const reportTemplate = readTemplate(path.join("references", "review_report_template.md"));
+    const block = /```[\s\S]*?```/.exec(reportTemplate)?.[0] ?? "";
+    expect(block.length).toBeGreaterThan(0);
+    for (const field of ["Scope for this round", "new / regression", "Open blocking:", "Open ids:"]) {
+      expect(block).toContain(field);
+    }
+    // ... and the review skill must actually require them, so the assertion
+    // above cannot silently outlive the skill's own requirement
+    const reviewSkill = readSkill("review");
+    for (const required of ["Scope for this round", "Open blocking", "Open ids", "regression"]) {
+      expect(reviewSkill).toContain(required);
+    }
+    // the field contract table must register the new/regression field too
+    expect(reportTemplate).toMatch(/\|\s*`new \/ regression`\s*\|/);
   });
 
   it("records the three-value fix disposition and the write protection", () => {
