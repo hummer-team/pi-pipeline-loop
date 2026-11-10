@@ -5,6 +5,8 @@ userInvocable: false
 disable-model-invocation: true
 ---
 
+> Read and follow `references/review-loop-contract.md` (sections 2-4 and 8).
+
 # Design Review Skill
 
 This skill defines the design review stage of the pipeline, where plan documents are reviewed for completeness, consistency, and feasibility before proceeding to development.

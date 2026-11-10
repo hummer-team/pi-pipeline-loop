@@ -5,6 +5,8 @@ userInvocable: false
 disable-model-invocation: true
 ---
 
+> Read and follow `references/review-loop-contract.md` (sections 2-4 and 8).
+
 ## workflow
 1. **Parse Input**: The task description carries the target commit document path (`docs/design/{reqBase}_Develop_Commit.md`); read that exact file. Your report MUST be written to the `Expected report` path given in the prompt.
 2. Read `{file}_Develop_Commit.md`. Terminate review and output "Missing plan document, please supplement" if `plan doc` is absent; terminate review and report error if `commit id` is missing.

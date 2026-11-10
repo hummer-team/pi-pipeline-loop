@@ -5,6 +5,8 @@ userInvocable: false
 disable-model-invocation: true
 ---
 
+> Read and follow `references/review-loop-contract.md` (sections 9 and 5.2).
+
 ## workflow
 
 ### Mandatory

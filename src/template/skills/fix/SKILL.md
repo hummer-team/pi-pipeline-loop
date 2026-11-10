@@ -4,6 +4,8 @@ description: Fix and optimize based on the review results
 userInvocable: false
 disable-model-invocation: true
 ---
+
+> Read and follow `references/review-loop-contract.md` (sections 5.1 and 6).
 ## workflow
 1. Use the review file path given in the task prompt; do not search `docs/review/` yourself.
 2. Read the `# Summary` section of the plan document

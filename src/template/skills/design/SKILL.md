@@ -5,6 +5,8 @@ userInvocable: false
 disable-model-invocation: true
 ---
 
+> Read and follow `references/review-loop-contract.md` (sections 9).
+
 
 ## Round Title Contract
 - **Recommended format**: `# 第 N 轮澄清` (Chinese, h1 or h2)
