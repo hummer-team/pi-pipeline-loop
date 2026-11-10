@@ -30,7 +30,7 @@ disable-model-invocation: true
 2. Full‑coverage review before finalizing the plan.
 3. Shall not exceed the scope of issue clarification and solution decisions.
 4. Acceptance criteria follow `references/review-loop-contract.md` §9 (testable assertions); target code snippets stay illustrative.
-4. Plan targets carry CONTRACT-LEVEL precision: each Phase MUST state testable acceptance assertions (exact command + expected outcome), not "target code" sketches — the design-review's blocking set audits THIS contract.
+5. Plan targets carry CONTRACT-LEVEL precision: each Phase MUST state testable acceptance assertions (exact command + expected outcome), not "target code" sketches — the design-review's blocking set audits THIS contract.
 
 ### Follow YAGNI Principle‑Code Restraint & Reflection
 1. Is there an existing implementation in codebase? Reuse existing functions and modules.
@@ -71,7 +71,7 @@ disable-model-invocation: true
 ### Authorized Update Mode
 - **Trigger**: the dispatch payload carries a design-review report path and a `round` (dispatched when design-review returned FAIL with `action` = `revise-plan`).
 - **Allowed**: change ONLY the plan document. The requirement document, source code and other plans are out of scope.
-- **Produces**: a STANDALONE revision receipt `{designDir}/Design_Review_Update_{index}_{docBase}.md` (`{index}` = the loop round, `{docBase}` = the plan document base name); the payload's explicit path takes precedence.
+- **Produces**: a STANDALONE revision receipt named by the plugin as `{designDir}/Design_Review_Update_{index}_{operationId}_{reqBase}_Design.md` (`{index}` = the loop round, `{operationId}` = the design-review operation id, `{reqBase}` = the requirement base name); the payload's explicit path takes precedence.
 - **Receipt content**: one line per injected issue id — `ID | Disposition | Evidence | Note`; `Disposition` MUST come from the five-value vocabulary of contract §5.2: `fixed` / `deferred` / `rejected` / `new-decision` / `unfixable`.
 - **Constraints**:
   - `deferred` and `rejected` MUST state the reason and the follow-up handling; a `rejected` item MUST additionally be promoted to `accepted-risk` or escalated to a human.

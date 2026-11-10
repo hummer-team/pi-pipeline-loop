@@ -166,13 +166,18 @@ carries an explicit output path, it takes precedence.
 | Loop | Artifact | Location |
 |---|---|---|
 | Plan review | `Design_Review_{index}_{docBase}.md` | design directory |
-| Plan revision receipt | `Design_Review_Update_{index}_{docBase}.md` | design directory |
+| Plan revision receipt | `Design_Review_Update_{index}_{operationId}_{reqBase}_Design.md` | design directory |
 | Code review | `Code_Review_{reqBase}_Develop_Commit_{index}.md` | review directory |
 
 - `{index}` is the round number of the loop and MUST equal the `<round>` value
   inside the artifact's issue ids.
 - `{docBase}` is the reviewed plan document's base name; `{reqBase}` is the
   requirement document's base name.
+- The plan revision receipt name is derived by the plugin from the round, the
+  operation id and the requirement base name (it mirrors the
+  `Design_Review_{index}_{reqBase}_Design.md` report family). Skills MUST NOT
+  invent their own receipt name: when the dispatch payload names the receipt
+  path, that path is authoritative.
 - Old reports that predate this contract are legacy: they MUST NOT be migrated;
   a new round starts a fresh ledger.
 

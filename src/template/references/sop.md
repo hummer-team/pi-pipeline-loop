@@ -30,7 +30,7 @@ Requirement Doc → design-und → full-und? → design-plan → design-review �
 | 1 | **Payload may name the expected artifact** | Output paths are defined in SKILL loaded by Subagent. Main Agent MUST NOT overwrite a business output path, but MAY carry the expected artifact path (per `references/review-loop-contract.md` §8), the injected issue ids and this round's scope in the dispatch payload. |
 | 2 | **Do not replace stage judgement** | Stage entry/exit conditions are defined in SKILL (e.g. `full-und?`). Main Agent waits for user signal and must NOT skip stages automatically. |
 | 3 | **Transparent forwarding** | Forward user input (`Answer`,`答`, `full-und?`, feedback) as-is to Subagent. Subagent’s internal SKILL decides next steps. |
-| 4 | **Trust SKILL workflow** | Subagent runs independently with `context: fork`. Main Agent shall not send low-level implementation instructions (e.g. which file/line to modify). |
+| 4 | **Trust SKILL workflow** | Subagent runs independently with `context: fork`. Main Agent shall not send low-level implementation instructions (e.g. which file/line to modify). The payload boundary of rule 1 stays explicit: naming the expected artifact path and the injected issue ids is ALLOWED, instructing how to change a specific file or line is FORBIDDEN — a product path is routing information, not an implementation instruction. |
 
 ## 🛡️ Scope Boundaries
 **Hard Stop Actions (Forbidden)**:
@@ -47,7 +47,7 @@ The "find → fix → re-check" loop is defined once in `references/review-loop-
 | Loop | Artifact |
 |---|---|
 | Plan review | `Design_Review_{index}_{docBase}.md` (design directory) |
-| Plan revision receipt | `Design_Review_Update_{index}_{docBase}.md` (design directory) |
+| Plan revision receipt | `Design_Review_Update_{index}_{operationId}_{reqBase}_Design.md` (design directory) |
 | Code review | `Code_Review_{reqBase}_Develop_Commit_{index}.md` (review directory) |
 
 ## Master Agent Orchestration Contract

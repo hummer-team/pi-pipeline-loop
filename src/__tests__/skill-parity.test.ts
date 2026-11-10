@@ -51,7 +51,18 @@ const LINE_ROOTS = {
 } as const;
 
 /**
- * Registered host differences. Every dimension MUST carry a non-empty
+ * Registered host-local skill directories: extra skill folders that exist on a
+ * development host but are NOT part of the six pipeline skills. They are
+ * tolerated ONLY when listed here, so an unregistered addition or a rename
+ * still fails the parity assertion below (230 CR-1-10).
+ */
+const HOST_LOCAL_SKILLS: Record<LineName, readonly string[]> = {
+  opencode: ["ui-ux-pro-max"],
+  pi: [],
+  template: [],
+} as const;
+
+/** Registered host differences. Every dimension MUST carry a non-empty
  * explanation: adding a difference without registering it here fails the
  * contract (§7 keeps dispatch with the orchestrator; the rest are host APIs).
  */
@@ -151,14 +162,11 @@ parityDescribe("230 Phase 6: cross-line skill parity", () => {
         .map((mapping) => mapping[line])
         .sort();
       const actual = skillDirectories(line);
-      if (line === "template") {
-        // the shipped product contains exactly the six pipeline skills
-        expect(actual).toEqual(expected);
-        continue;
-      }
-      // the two development hosts may also carry unrelated local skills
-      // (e.g. `ui-ux-pro-max`); the six pipeline directories must all exist and
-      // must keep their registered names, which catches any rename.
+      // The six pipeline directories must be present with their registered
+      // names AND nothing else may appear unless it is registered as a local
+      // host skill — an unregistered addition or any rename fails here.
+      const allowed = [...expected, ...HOST_LOCAL_SKILLS[line]].sort();
+      expect(actual).toEqual(allowed);
       for (const name of expected) {
         expect(actual).toContain(name);
       }

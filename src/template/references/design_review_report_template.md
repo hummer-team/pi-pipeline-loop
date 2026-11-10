@@ -76,8 +76,11 @@
   OPTIONAL — SMART confirmation mode, FAIL verdict ONLY.
   This is an INERT EXAMPLE: keep it inside this comment unless BOTH
   conditions hold (confirmation mode is smart AND the verdict is FAIL).
-  PASS reports and auto/manual mode reports MUST NOT contain a Plan
-  Revision Decision section — its presence there rejects the report.
+  Contract §3 routing: FAIL MUST carry exactly one decision section (a smart
+  FAIL without one is rejected as invalid); PASS MUST NOT carry one, and a
+  stray section in a PASS report is simply ignored — the decision gate never
+  runs on PASS, so it does not change the verdict. Auto/manual mode reads the
+  report without a decision.
   `**action**` accepts ONLY `revise-plan` or `request-human`
   (`proceed-develop` is never valid — smart does not release a FAIL).
   `**reason**` must be a real justification, never template text.

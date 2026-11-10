@@ -181,7 +181,8 @@ describe("install-time docs-path rendering (222 Phase 5)", () => {
 
     const review = await fsp.readFile(path.join(root, ".pi/skills/review/SKILL.md"), "utf8");
     expect(review).toContain("### 8.1 Review Output Directory: `spec/review`");
-    expect(review).toContain("`spec/review/Code_Review_xx_Plan_Develop_Commit_1.md`");
+    // 230 CR-1-2: the naming rule follows contract §8 `{reqBase}` (no `_Plan`).
+    expect(review).toContain("`spec/review/Code_Review_230_Feat_Develop_Commit_1.md`");
 
     const design = await fsp.readFile(path.join(root, ".pi/skills/design/SKILL.md"), "utf8");
     expect(design).toContain("`spec/design/{index}_{xxx}.md`");

@@ -85,10 +85,11 @@ disable-model-invocation: true
 
 ### 8.1 Review Output Directory: `{reviewDir}`
 0. **Path convention**: Never write business deliverables under `{auditDir}/` (plugin-internal artifacts only); use user-visible paths such as `{designDir}/`.
-1. File naming rule: `Code_Review_{file}_Develop_Commit_{index}.md`
-   - `{file}`: Plan file name
-   - `{index}`: Review round number, starting from 1
-   - Example: `{reviewDir}/Code_Review_xx_Plan_Develop_Commit_1.md`
+1. File naming rule: `Code_Review_{reqBase}_Develop_Commit_{index}.md` (contract §8)
+   - `{reqBase}`: requirement base name — the requirement document's base name, i.e. the plan file name with the trailing `_Plan` marker stripped
+   - `{index}`: Review round number, starting from 1; it MUST equal the `<round>` value inside the issue ids (`CR-<round>-<n>`)
+   - Example: plan `{designDir}/230_Feat_Plan.md` → `{reviewDir}/Code_Review_230_Feat_Develop_Commit_1.md`
+   - The `Expected report` path given in the prompt takes precedence when the orchestrator carries an explicit path
 2. Strictly follow the content template. Output type‑safety, regression‑side‑effect detection issues via template if found. If no issues exist, briefly summarize review scope inside `Summary`.
 3. use `read` tool report format flow [review_report_template.md](.pi/references/review_report_template.md)
 4. End the report with these two fixed lines so the orchestrator can evaluate gates 1 and 2 (contract §6):

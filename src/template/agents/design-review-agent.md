@@ -57,15 +57,16 @@ Generate a markdown report following the structure in `references/design_review_
   into a PASS report (`proceed-develop` is not a valid action)
 
 ## Verdict Criteria
-- BLOCKING SET: the verdict is FAIL only when `## Issues` carries at least
-  one BLOCKING issue (severity Blocker or High WITH Evidence) — blocking
-  issues take precedence over the conclusion line; a missing severity or a
-  blocking issue without Evidence makes the report INVALID (fail-closed)
+- BLOCKING SET (contract §3): the verdict is FAIL only when `## Issues`
+  carries at least one BLOCKING issue (severity Blocker or High WITH
+  Evidence) — blocking issues take precedence over the conclusion line; a
+  missing severity or a blocking issue without Evidence makes the report
+  INVALID (fail-closed)
 - Medium/Low issues never fail the verdict — they stay in the ledger as
   `open`; PASS = `None` or NO blocking issue
-- The conclusion line still decides pass/fail when only non-blocking issues
-  report PASS-or-FAIL normally; an assertable FAIL must name at least one
-  blocking issue, otherwise the report is invalid (never routed)
+- The verdict is decided by the blocking set alone; the conclusion line
+  cannot override it in either direction (a FAIL conclusion with an empty
+  blocking set is not a FAIL)
 
 ## Constraints
 - Writable scope: the CURRENT review report and nothing else — never the
