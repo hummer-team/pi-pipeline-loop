@@ -22,12 +22,12 @@
 
 ## 🤖 Subagent Scheduling SOP
 ```
-Requirement Doc → design-und → full-und? → design-plan → develop → code-review
-(Request File)  (Append clarify) (User and model Confirm) (Output _Plan.md) (Phase-wise Dev) (Review Report)
+Requirement Doc → design-und → full-und? → design-plan → design-review → develop → code-review
+(Request File)  (Append clarify) (User and model Confirm) (Output _Plan.md) (Review Plan) (Phase-wise Dev) (Review Report)
 ```
 | # | Rule | Description |
 |---|------|-------------|
-| 1 | **Do not override output paths** | Output paths are defined in SKILL loaded by Subagent. Main Agent must NOT specify write/overwrite paths in prompts. |
+| 1 | **Payload may name the expected artifact** | Output paths are defined in SKILL loaded by Subagent. Main Agent MUST NOT overwrite a business output path, but MAY carry the expected artifact path (per `references/review-loop-contract.md` §8), the injected issue ids and this round's scope in the dispatch payload. |
 | 2 | **Do not replace stage judgement** | Stage entry/exit conditions are defined in SKILL (e.g. `full-und?`). Main Agent waits for user signal and must NOT skip stages automatically. |
 | 3 | **Transparent forwarding** | Forward user input (`Answer`,`答`, `full-und?`, feedback) as-is to Subagent. Subagent’s internal SKILL decides next steps. |
 | 4 | **Trust SKILL workflow** | Subagent runs independently with `context: fork`. Main Agent shall not send low-level implementation instructions (e.g. which file/line to modify). |
@@ -39,6 +39,45 @@ Requirement Doc → design-und → full-und? → design-plan → develop → cod
 - Do NOT modify core project config files which break project structure.
 - No complimentary opening or closing remarks.
 - Do NOT cater to user opinions; reason and validate based on project facts.
+
+## Review Loop Contract
+
+The "find → fix → re-check" loop is defined once in `references/review-loop-contract.md` (nine sections). This SOP only states how the orchestrator runs it; every criterion (blocking set, issue ids, ledger, dispositions, convergence gates, artifact names) comes from that contract.
+
+| Loop | Artifact |
+|---|---|
+| Plan review | `Design_Review_{index}_{docBase}.md` (design directory) |
+| Plan revision receipt | `Design_Review_Update_{index}_{docBase}.md` (design directory) |
+| Code review | `Code_Review_{reqBase}_Develop_Commit_{index}.md` (review directory) |
+
+## Master Agent Orchestration Contract
+
+The orchestrator owns dispatch and acceptance (contract §7). Skills/agents return `verdict + nextStage`; they never spawn the next stage.
+
+**Pre-dispatch gates** (all MUST hold before dispatching):
+
+1. The previous stage's artifact exists at the path the contract dictates.
+2. The report is contract-parsable: every issue carries an id, a severity and Evidence (Blocker/High), and the ledger restates every injected id.
+3. `openBlocking` was computed from the round report's `## Issue Ledger` (status `open` with severity Blocker/High).
+4. None of the three convergence gates fired (contract §6).
+5. The round budget is not exhausted.
+
+**Dispatch payload fields**: `stage`, `round`, expected artifact path, the injected previous-round open id list, this round's scope, and the acceptance command(s).
+
+**Post-dispatch acceptance** (in order): path exists → contract-parsable → verdict parsed → `openBlocking` recomputed → gate state updated. A sub-agent that claims completion while its artifact is unchanged counts as a FAILED dispatch.
+
+**Failure matrix**:
+
+| Failure | Action |
+|---|---|
+| Artifact missing / path mismatch | Re-dispatch once, carrying the expected path |
+| Contract-invalid report | Return once with the validation feedback; a second failure escalates to a human |
+| Same cause fails twice | Escalate to a human |
+| Three consecutive failures | Hard stop |
+| `pending_spawn_stalled` | Exactly one manual dispatch is allowed |
+| Loop budget exhausted | Follow `onExhausted` / the human decision |
+
+**Gate execution detail**: gates 1 and 2 compare the previous and current rounds' `Open blocking` / `Open ids` lines; gate 3 counts rounds of the loop. Hitting any gate stops the loop and outputs the remaining blocking list plus one recommendation (`revise-plan`, `request-human`, or `advance`).
 
 ## PIPELINE AUTOMATION RULES
 The pipeline plugin handles the following automatically. Do NOT duplicate or interfere with these operations:

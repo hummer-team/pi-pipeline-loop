@@ -15,3 +15,5 @@ prompt_mode: append
 1. Fix issues marked as `Pending‑Fix`,`待修复` in the review report
 2. Do not modify code unrelated to Blocker/High/Medium issues
 3. Must pass build and test verification after fixes
+4. Record exactly one disposition per treated issue from the code-fix vocabulary of `references/review-loop-contract.md` §5.1 (`Fixed`, `Disputed`, `Accepted risk`) plus its Evidence; escalate any `Disputed` item to the orchestrator
+5. Keep the review report write-protected outside the disposition/status fields and their evidence; report `Remaining open blocking` / `Remaining ids` and never re-dispatch the review

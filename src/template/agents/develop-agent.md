@@ -14,3 +14,4 @@ prompt_mode: append
 ## Responsibilities
 1. Complete feature development and unit‑testing based on the plan document
 2. Develop incrementally by Phase; each phase must pass build and test verification upon completion
+3. On completion return `nextStage` and the commit record path — never dispatch the review stage yourself (contract §7)
