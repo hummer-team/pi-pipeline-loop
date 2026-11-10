@@ -64,9 +64,11 @@ Generate a markdown report following the structure in `references/design_review_
   INVALID (fail-closed)
 - Medium/Low issues never fail the verdict — they stay in the ledger as
   `open`; PASS = `None` or NO blocking issue
-- The verdict is decided by the blocking set alone; the conclusion line
-  cannot override it in either direction (a FAIL conclusion with an empty
-  blocking set is not a FAIL)
+- A FAIL conclusion with no issue items is ALSO a `fail` (the verifier rejects
+  an empty issue list as ambiguous): never write FAIL without listing at least
+  the blocking issue that justifies it
+- This section only restates contract §3 for reading convenience; where the
+  wording and the trusted verifier disagree, the verifier decides
 
 ## Constraints
 - Writable scope: the CURRENT review report and nothing else — never the

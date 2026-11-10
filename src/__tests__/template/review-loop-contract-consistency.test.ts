@@ -23,6 +23,7 @@ import { describe, it, expect } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { parse as yamlParse } from "yaml";
+import { designReviewDocFileName, NEW_DESIGN_REVIEW_RE } from "../../core/naming/doc-naming";
 
 const TEMPLATE_DIR = path.resolve(__dirname, "../../template");
 const REFERENCES_DIR = path.join(TEMPLATE_DIR, "references");
@@ -117,5 +118,44 @@ describe("230 Phase 5: review-loop contract consistency (template)", () => {
     expect(sop).toContain("## Master Agent Orchestration Contract");
     // the chain must list design-review between plan and develop
     expect(sop).toMatch(/design-plan\s*→\s*design-review\s*→\s*develop/);
+  });
+
+  it("names the plan-review artifact with the runtime derivation, never the plan basename", () => {
+    // CR-2-1: the contract §8 row is repeated verbatim by the SOP, the design
+    // plan/review skills and the guide. All of them must teach the SAME family
+    // the plugin derives, otherwise the report never matches
+    // NEW_DESIGN_REVIEW_RE and the cross-round ledger closure is skipped.
+    const runtimeName = designReviewDocFileName("230_Feat", 2);
+    expect(runtimeName).toBe("Design_Review_2_230_Feat_Design.md");
+    expect(NEW_DESIGN_REVIEW_RE.test(runtimeName)).toBe(true);
+    // the plan-basename shape does not belong to the recognized family
+    expect(NEW_DESIGN_REVIEW_RE.test("Design_Review_2_230_Feat_Plan.md")).toBe(false);
+
+    // The contract and the SOP teach the name; the skill defers to the spawn
+    // context but must never teach the plan-basename shape either.
+    for (const artifact of [
+      readTemplate(path.join("references", "review-loop-contract.md")),
+      readTemplate(path.join("references", "sop.md")),
+    ]) {
+      expect(artifact).toContain("Design_Review_{index}_{reqBase}_Design.md");
+    }
+    for (const artifact of [
+      readTemplate(path.join("references", "review-loop-contract.md")),
+      readTemplate(path.join("references", "sop.md")),
+      readSkill("design-review"),
+    ]) {
+      expect(artifact).not.toContain("Design_Review_{index}_{docBase}");
+    }
+  });
+
+  it("makes the Issue Ledger mandatory in every round", () => {
+    // CR-2-2: the template must never teach omitting the ledger — the verifier
+    // requires it as soon as a previous report is readable.
+    const reportTemplate = readTemplate(path.join("references", "design_review_report_template.md"));
+    expect(reportTemplate).toContain("## Issue Ledger");
+    expect(reportTemplate).toMatch(/never optional/i);
+    expect(reportTemplate).not.toMatch(/\(omit it\)/i);
+    expect(reportTemplate.toLowerCase()).not.toContain("stays empty");
+    expect(reportTemplate).toMatch(/EVERY round/);
   });
 });

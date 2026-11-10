@@ -20,10 +20,13 @@
   * Every issue row needs the contract §2 schema: `ID` (stable `DR-<round>-n`),
     `severity` (Blocker | High | Medium | Low), `evidence` (REQUIRED for
     Blocker/High — the failing command / assertion / commit) and `summary`.
-  * CROSS-ROUND LEDGER (contract §4): when the dispatch context injects
-    previous-round open findings, every injected id MUST re-appear in
-    `## Issue Ledger` with a legal status (`open`/`fixed`/`accepted-risk`/
-    `carry-over`) — a missing id rejects the report as invalid.
+  * CROSS-ROUND LEDGER (contract §4): `## Issue Ledger` MUST be present in
+    EVERY round — it is never optional. When the dispatch context injects
+    previous-round open findings, every injected id MUST re-appear in the table
+    with a legal status (`open`/`fixed`/`accepted-risk`/`carry-over`) — a
+    missing id rejects the report as invalid. When nothing was injected the
+    section stays present with its header row and separator row and no data
+    rows.
   * This report is the ONLY file the reviewer may write or edit. The
     reviewer never approves a stage or routes its own verdict — the plugin
     validates the report and performs every transition.
@@ -53,12 +56,14 @@
 
 ## Issue Ledger
 
-<!-- Full cross-round ledger. When the dispatch context injected a
-     previous-round findings list, restate EVERY injected id here with its
-     CURRENT status. `ID` is the stable issue id (`DR-<round>-n`, `LEGACY-n`
-     once before the first legacy backfill), `origin` is the FIRST-SEEN round.
+<!-- The ledger is REQUIRED in every round and is never omitted. When the
+     dispatch context injected a previous-round findings list, restate EVERY
+     injected id here with its CURRENT status. `ID` is the stable issue id
+     (`DR-<round>-n`, `LEGACY-n` once before the first legacy backfill),
+     `origin` is the FIRST-SEEN round.
      Status vocabulary: open / fixed / accepted-risk / carry-over. Without
-     injected findings this section stays empty (omit it). -->
+     injected findings keep the section with its header row, separator row and
+     no data rows — an omitted section rejects the report. -->
 | ID | Severity | Status | Evidence | Summary |
 | --- | --- | --- | --- | --- |
 

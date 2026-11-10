@@ -2344,7 +2344,7 @@ byReason[reason] → 显式 onExhausted[loop] → onFreeze → 回环默认 adva
 | §5 | 处置词表（§5.1 代码三值；§5.2 计划五值，互斥） |
 | §6 | 三道收敛门（无进展 / 同证据复现 / 轮次预算）+ `openBlocking` 口径 |
 | §7 | 派发权（只有编排者派发；skill 只回 `verdict + nextStage`） |
-| §8 | 产物命名（`Design_Review_{index}_{docBase}.md` / `Design_Review_Update_{index}_{operationId}_{reqBase}_Design.md` / `Code_Review_{reqBase}_Develop_Commit_{index}.md`） |
+| §8 | 产物命名（`Design_Review_{index}_{reqBase}_Design.md` / `Design_Review_Update_{index}_{operationId}_{reqBase}_Design.md` / `Code_Review_{reqBase}_Develop_Commit_{index}.md`） |
 | §9 | 计划契约（每 Phase 必须给出精确命令 + 预期结果） |
 
 三线资产（`.opencode`、`.pi`、`src/template`）的 skill / agent / report template / stage prompt 只保留"契约引用 + 宿主差异"，不再各自复述判据。运行时 verifier（`design-review-verifier` 的 `severityGate`、`fix-report-edit-verifier` 的白名单）是契约的参考实现：资产与 verifier 冲突时以 verifier 为准。

@@ -11,8 +11,10 @@
  * Asserted invariants:
  *   1. the three contract copies are byte-identical (one semantic source);
  *   2. all 18 skills exist and reference that contract;
- *   3. the stage → skill mapping holds on every line with no extra/renamed
- *      directories;
+ *   3. the stage → skill mapping holds on every line: the six pipeline
+ *      directories are present, nothing unregistered appears, and a registered
+ *      host-local skill is tolerated but never required (a fresh clone without
+ *      it must stay green);
  *   4. no skill self-dispatches the next stage (`subagent_type` / `task tool`);
  *   5. all three SOPs carry the two orchestration sections;
  *   6. host differences stay inside the registered whitelist and every entry
@@ -51,10 +53,11 @@ const LINE_ROOTS = {
 } as const;
 
 /**
- * Registered host-local skill directories: extra skill folders that exist on a
- * development host but are NOT part of the six pipeline skills. They are
- * tolerated ONLY when listed here, so an unregistered addition or a rename
- * still fails the parity assertion below (230 CR-1-10).
+ * Registered host-local skill directories: extra skill folders that may exist on
+ * a development host but are NOT part of the six pipeline skills. They are
+ * tolerated when listed here and are OPTIONAL — a machine that lacks them must
+ * stay green (a fresh clone ships neither). An unregistered addition or a rename
+ * still fails the parity assertion below (230 CR-1-10 / CR-2-4).
  */
 const HOST_LOCAL_SKILLS: Record<LineName, readonly string[]> = {
   opencode: ["ui-ux-pro-max"],
@@ -158,18 +161,24 @@ parityDescribe("230 Phase 6: cross-line skill parity", () => {
 
   it("maps every stage to exactly one skill directory per line", () => {
     for (const line of LINES) {
-      const expected = Object.values(STAGE_SKILLS)
+      const expected: string[] = Object.values(STAGE_SKILLS)
         .map((mapping) => mapping[line])
         .sort();
       const actual = skillDirectories(line);
-      // The six pipeline directories must be present with their registered
-      // names AND nothing else may appear unless it is registered as a local
-      // host skill — an unregistered addition or any rename fails here.
-      const allowed = [...expected, ...HOST_LOCAL_SKILLS[line]].sort();
-      expect(actual).toEqual(allowed);
+      // (1) The six pipeline directories MUST be present with their registered
+      // names — a rename or a missing pipeline skill fails here.
       for (const name of expected) {
         expect(actual).toContain(name);
       }
+      // (2) Nothing unregistered may appear: the difference between what is on
+      // disk and the six registered names MUST stay inside the host-local
+      // whitelist, so an unregistered addition still fails.
+      const extras = actual.filter((name) => !expected.includes(name));
+      const unregistered = extras.filter((name) => !HOST_LOCAL_SKILLS[line].includes(name));
+      expect(unregistered).toEqual([]);
+      // (3) A registered host-local skill is OPTIONAL: it may be absent on a
+      // machine that never installed it, so presence is tolerated, never
+      // required (a fresh clone must stay green — B12).
     }
   });
 

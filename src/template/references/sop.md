@@ -46,7 +46,7 @@ The "find → fix → re-check" loop is defined once in `references/review-loop-
 
 | Loop | Artifact |
 |---|---|
-| Plan review | `Design_Review_{index}_{docBase}.md` (design directory) |
+| Plan review | `Design_Review_{index}_{reqBase}_Design.md` (design directory) |
 | Plan revision receipt | `Design_Review_Update_{index}_{operationId}_{reqBase}_Design.md` (design directory) |
 | Code review | `Code_Review_{reqBase}_Develop_Commit_{index}.md` (review directory) |
 
