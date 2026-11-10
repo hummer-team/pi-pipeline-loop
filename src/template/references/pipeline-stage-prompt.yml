@@ -428,6 +428,7 @@ stage_deliverable_plan: |
 
 stage_deliverable_design-review: |
   - **MUST** perform design review and produce a review report containing ALL four sections exactly once (any order): `## Summary`, `## Recommendations`, `## Verdict`, `## Issues`
+  - **MUST** apply the criteria of `references/review-loop-contract.md` §2–§4 and §8 (issue schema, verdict gate, ledger, artifacts) as the only semantic source — the items below add only what that contract does not cover
   - **MUST** include the five identity header rows binding the report to this review — `**pipeline**: {pipelineId}`, plan path, round, operation, input hash — copied verbatim from the spawn context, never from memory
   - **MUST** write exactly `None` as the only `## Issues` entry when there are no issues (an empty Issues section is never "no issues")
   - **MUST** include a verdict line in bilingual+bold-tolerant form: `结论：(通过|不通过)` / `Verdict: (PASS|FAIL)` / `**Design Review: (PASS|FAIL)**` — bold/italic markup (`**`/`_`) tolerated
@@ -449,7 +450,11 @@ stage_deliverable_develop: |
 stage_deliverable_review: |
   - **MUST** include `**pipeline**: {pipelineId}` in the artifact file header
   - **MUST** perform code review and produce a review report
+  - **MUST** apply the criteria of `references/review-loop-contract.md` §2–§4 and §8 (issue schema, verdict gate, ledger, artifacts) as the only semantic source
   - **MUST** include a verdict line in bilingual+bold-tolerant form: `结论：(通过|不通过)` / `Verdict: (PASS|FAIL)` / `Conclusion: (pass|fail)` — bold/italic markup (`**`/`_`) tolerated
+  - **MUST** give every issue a stable `ID` (`CR-<round>-n`) with a required severity; a Blocker/High without Evidence rejects the report as invalid
+  - **MUST** restate every injected previous-round open id in `## Issue Ledger` with a legal status (`open`/`fixed`/`accepted-risk`/`carry-over`) — a missing id rejects the report
+  - **MUST** declare `Scope for this round` (commit range and files reviewed); out-of-scope edits are reported as issue type `scope_violation` (severity High, section/line Evidence)
 
 stage_deliverable_fix: |
   - **MUST** run the project build command and confirm it passes (command determined by project tech stack)

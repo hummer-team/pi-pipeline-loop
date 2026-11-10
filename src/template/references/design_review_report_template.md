@@ -1,7 +1,8 @@
 <!--
-  Design-review report template (193 contract + cross-round convergence). The
-  trusted domain verifier enforces ALL of the following on this file, from ONE
-  snapshot:
+  Design-review report template. The rules below are defined by the review
+  loop contract — sections §2-§4 of `references/review-loop-contract.md` are
+  the single source of truth (issue schema, verdict gate, ledger); this report
+  is additionally validated by the trusted domain verifier, from ONE snapshot:
 
   * The four sections below (Summary, Recommendations, Verdict, Issues) are
     each MANDATORY and appear exactly once; their order does not matter;
@@ -10,16 +11,16 @@
     (never from memory): a missing or differing row rejects the report.
     Canonical labels `**operation**` / `**input hash**` are shown; the
     legacy aliases `**operationId**` / `**baselinePlanHash**` also pass.
-  * BLOCKING SET: the verdict is FAIL only when `## Issues` carries
-    at least one BLOCKING issue (severity Blocker or High WITH Evidence).
-    Medium/Low issues never fail the verdict — they enter the ledger as
-    `open`. Exactly `None` (the whole entry) states "there are no issues".
-    ISSUES TAKE PRECEDENCE: a blocking issue forces the verdict FAIL,
-    whatever the conclusion line says.
-  * Every issue row needs: `ID` (stable `DR-<round>-n`), `severity`
-    (Blocker | High | Medium | Low), `evidence` (REQUIRED for
+  * BLOCKING ISSUES TAKE PRECEDENCE (contract §3): the verdict is FAIL only
+    when `## Issues` carries at least one BLOCKING issue (severity Blocker or
+    High WITH Evidence). Medium/Low issues never fail the verdict — they
+    enter the ledger as `open`. Exactly `None` (the whole entry) states
+    "there are no issues"; the conclusion line cannot override a blocking
+    issue.
+  * Every issue row needs the contract §2 schema: `ID` (stable `DR-<round>-n`),
+    `severity` (Blocker | High | Medium | Low), `evidence` (REQUIRED for
     Blocker/High — the failing command / assertion / commit) and `summary`.
-  * CROSS-ROUND LEDGER: when the dispatch context injects
+  * CROSS-ROUND LEDGER (contract §4): when the dispatch context injects
     previous-round open findings, every injected id MUST re-appear in
     `## Issue Ledger` with a legal status (`open`/`fixed`/`accepted-risk`/
     `carry-over`) — a missing id rejects the report as invalid.
