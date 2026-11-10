@@ -91,6 +91,9 @@ disable-model-invocation: true
    - Example: `{reviewDir}/Code_Review_xx_Plan_Develop_Commit_1.md`
 2. Strictly follow the content template. Output type‑safety, regression‑side‑effect detection issues via template if found. If no issues exist, briefly summarize review scope inside `Summary`.
 3. use `read` tool report format flow [review_report_template.md](.pi/references/review_report_template.md)
+4. End the report with these two fixed lines so the orchestrator can evaluate gates 1 and 2 (contract §6):
+   - `Open blocking: <n>` — the number of ledger rows with status `open` and severity Blocker/High
+   - `Open ids: <id,...|None>`
 
 ### 9. not commit review doc
 1. All review‑related documents and templates shall be stored locally; no commit required.

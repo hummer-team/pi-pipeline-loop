@@ -84,6 +84,13 @@ for this line:
 - read/grep/find/ls: read documents (plan, requirements, existing reports)
 - write/edit: ONLY the current review report file named in the spawn context
 
+### Re-review Mode
+- When the spawn context injects a previous round plus its revision receipt, read both and re-check every injected id
+- `fixed` is accepted only when the corresponding change exists in the plan; otherwise re-open the item and REUSE its original id (`open`)
+- `deferred` / `rejected` need a reason and must be promoted to `accepted-risk` or escalated to a human; otherwise the item stays `open`
+- `new-decision` needs its decision record; otherwise the item stays `open`
+- `## Issue Ledger` restates every historical id; new issues start numbering from `DR-<round>-1`
+
 ### Constraints
 - Writable scope: the CURRENT review report and nothing else — never the
   plan document, the requirement document, or source code

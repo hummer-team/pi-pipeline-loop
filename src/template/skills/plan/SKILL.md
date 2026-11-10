@@ -67,3 +67,14 @@ disable-model-invocation: true
 ### Checkpoint discipline (crash-resilient output)
 - Create the deliverable file early (skeleton with section headers), then append content in ≤2KB chunks.
 - Never accumulate the full result for a single final write — at any crash point, the sunk cost is at most the last unwritten chunk.
+
+### Authorized Update Mode
+- **Trigger**: the dispatch payload carries a design-review report path and a `round` (dispatched when design-review returned FAIL with `action` = `revise-plan`).
+- **Allowed**: change ONLY the plan document. The requirement document, source code and other plans are out of scope.
+- **Produces**: a STANDALONE revision receipt `{designDir}/Design_Review_Update_{index}_{docBase}.md` (`{index}` = the loop round, `{docBase}` = the plan document base name); the payload's explicit path takes precedence.
+- **Receipt content**: one line per injected issue id — `ID | Disposition | Evidence | Note`; `Disposition` MUST come from the five-value vocabulary of contract §5.2: `fixed` / `deferred` / `rejected` / `new-decision` / `unfixable`.
+- **Constraints**:
+  - `deferred` and `rejected` MUST state the reason and the follow-up handling; a `rejected` item MUST additionally be promoted to `accepted-risk` or escalated to a human.
+  - `new-decision` MUST reference the decision record; `unfixable` MUST state the blocking point.
+  - Silently dropping an injected id is prohibited, and `fixed` MUST point at the plan section that changed.
+- **Forbidden**: restarting clarification, fabricating user confirmation, or dispatching the next stage.
