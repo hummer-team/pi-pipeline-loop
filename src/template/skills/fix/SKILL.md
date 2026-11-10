@@ -16,8 +16,7 @@ disable-model-invocation: true
    - Fix issues one‑by‑one
    - Commit code after fixes, complying with git commit conventions
    - After committing, copy the exact id git printed (e.g. via `git rev-parse HEAD`) into the doc's `**dev commit id**` line; NEVER invent, reuse or hand-edit a commit id; do NOT use `git add -f` and do NOT commit gitignored files
-   - Update the `Fixed‑status` or `是否修复` field of corresponding issues to the THREE-VALUE vocabulary: `Fixed / 已修复`, `Disputed / 争议`, `Accepted risk / 接受风险` (a disputed row MUST be escalated to the owner — never silently resolved)
-   - Fill the `证据` field of every touched issue with the EXACT failing command / assertion / commit id that proves the fix
-   - The review report's other fields (finding text, `等级`, ids, plan/summary) are WRITE-PROTECTED for you: rewriting them outside the whitelist is a `fix_report_edit_violation` and refuses the stage exit
+   - Dispositions follow the code-fix vocabulary of `references/review-loop-contract.md` §5.1 (`Fixed`, `Disputed`, `Accepted risk`) — record exactly one per treated issue together with its evidence
+   - The previous review report stays write-protected outside the disposition/status fields and their evidence; a rewrite outside that whitelist is a `fix_report_edit_violation` and refuses the stage exit
 8. **Fallback rule**: If `{reqBase}_Develop_Commit.md` does not exist (not created during development), create it as a fallback per `develop_commit_template.md` contract, record the dev commit id, then continue. Reading the HISTORICAL issue ledger of the review file (previous rounds) IS allowed — the history informs only the fix, never a report rewrite.
 9. **Forbidden**: Modify issues unrelated to pending fixes

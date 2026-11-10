@@ -20,6 +20,12 @@ xx
 - `build/compile` 零错误
 - `test` 全部通过（无新增测试，类型兼容验证）
 
+> 契约级验收断言（契约 §9）：每个 Phase 至少一条**精确命令 + 预期结果**；不可执行、不可观测的验收视为无效。
+> "目标代码片段"仅为示意，不构成逐字实现契约。
+
+### 单元测试目标，边界
+<描述单元测试目标、边界：新增或修改的测试文件、要覆盖的行为、明确不覆盖的边界>
+
 ### Commit 遵循规范
 ```
 feat(domain): phase {x} add BLOCKED status and optional/blockedReason fields to Task

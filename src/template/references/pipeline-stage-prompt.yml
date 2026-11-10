@@ -424,6 +424,7 @@ stage_deliverable_clarify: |
 stage_deliverable_plan: |
   - **MUST** produce a planning document with implementation steps
   - **MUST** include phase breakdown and task descriptions
+  - **MUST** apply `references/review-loop-contract.md` §9: every phase states testable acceptance assertions (exact command + expected result); target code snippets are illustrative only
   - **MUST** end the plan document with `## 用户确认` / `## User Confirmation` section for user sign-off
 
 stage_deliverable_design-review: |
@@ -461,6 +462,8 @@ stage_deliverable_fix: |
   - **MUST** run the project unit test command and confirm it passes (command determined by project tech stack)
   - **MUST** include `**pipeline**: {pipelineId}` in the artifact file header
   - **MUST** fix the identified issues from the review report
+  - **MUST** apply `references/review-loop-contract.md` §5.1: record exactly one disposition per treated issue (`Fixed`, `Disputed`, `Accepted risk`) with its Evidence; a `Disputed` item is escalated to the owner
+  - **MUST** leave the review report write-protected outside the disposition/status fields and their evidence
   - **MUST NOT** directly write to `.pi/audit/`; use `generate_stage_summary(commitIds: [...])` tool to record commit IDs in the stage summary
   - **MUST** write a human-readable commit record to `{designDir}/` (e.g. `{reqBase}_Develop_Commit.md`)
 
