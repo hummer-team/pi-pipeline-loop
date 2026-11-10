@@ -2326,3 +2326,43 @@ byReason[reason] → 显式 onExhausted[loop] → onFreeze → 回环默认 adva
 - `branch_drift`：阶段中途切分支 ⇒ verify 失败，纠偏文案"切回 `<branch>` 并重新提交"；
 - `stash_hidden`：阶段中途 stash 导致树被"藏干净" ⇒ verify 失败，纠偏文案"`git stash pop` 后提交恢复"。
 开关 `verify.requireGitInvariants`（阶段级 > 全局级 > 契约默认开）。采样 fail-open：命令失败/无 exec 不产生基线也不误判。manual 模式与 auto 同一契约判定，R1/R2 同样生效。
+
+---
+
+## 21. 评审回环契约与迁移（230）
+
+### 21.1 单一语义源
+
+"发现问题 → 修改问题 → 再次检查"的判据只写一次，落在 `references/review-loop-contract.md`（九节）：
+
+| 小节 | 内容 |
+|------|------|
+| §1 | 角色分权（Finder / Fixer / Orchestrator），禁止自评自修 |
+| §2 | Issue Schema（id / severity / evidence / status / summary） |
+| §3 | Verdict Gate（阻断集：Blocker/High 且带 Evidence） |
+| §4 | Issue Ledger（跨轮重述、id 稳定不重编号） |
+| §5 | 处置词表（§5.1 代码三值；§5.2 计划五值，互斥） |
+| §6 | 三道收敛门（无进展 / 同证据复现 / 轮次预算）+ `openBlocking` 口径 |
+| §7 | 派发权（只有编排者派发；skill 只回 `verdict + nextStage`） |
+| §8 | 产物命名（`Design_Review_{index}_{docBase}.md` / `Design_Review_Update_{index}_{docBase}.md` / `Code_Review_{reqBase}_Develop_Commit_{index}.md`） |
+| §9 | 计划契约（每 Phase 必须给出精确命令 + 预期结果） |
+
+三线资产（`.opencode`、`.pi`、`src/template`）的 skill / agent / report template / stage prompt 只保留"契约引用 + 宿主差异"，不再各自复述判据。运行时 verifier（`design-review-verifier` 的 `severityGate`、`fix-report-edit-verifier` 的白名单）是契约的参考实现：资产与 verifier 冲突时以 verifier 为准。
+
+### 21.2 编排契约与失败矩阵
+
+三份 SOP 新增 `## Review Loop Contract` 与 `## Master Agent Orchestration Contract`：
+
+- **派发前门禁**：上一步产物存在 → 报告可解析（id / severity / evidence / ledger 齐全）→ `openBlocking` 已按本轮 `## Issue Ledger` 计算 → 三道门未命中 → 预算未耗尽；
+- **载荷字段**：`stage`、`round`、期望产物路径、注入的上一轮 open id 列表、本轮范围、验收断言命令；
+- **派发后验收**：路径存在 → 契约可解析 → verdict 解析 → `openBlocking` 复算 → 门状态更新；"子 agent 声称完成但产物未变"按失败处理；
+- **失败矩阵**：产物缺失/路径不符 → 重派 1 次；契约非法 → 带反馈退回 1 次；同因失败 2 次 → 升级人工；连续 3 次 → 硬停；`pending_spawn_stalled` → 仅允许 1 次手动派发；回环耗尽 → 按 `onExhausted`/人工决策。
+
+修复侧与评审侧在报告末尾输出固定两行，供编排者计算门 1/门 2：评审侧 `Open blocking: <n>` / `Open ids: <id,...|None>`，修复侧对应 `Remaining open blocking: <n>` / `Remaining ids: <id,...|None>`。
+
+### 21.3 迁移说明（已初始化项目）
+
+1. **旧 `sop_CN.md` 需手动删除**：`/pipeline-init` 只 copy 不 delete，升级不会自动清理 `references/sop_CN.md`（该文件已从模板移除，不再维护）。建议直接 `rm .pi/references/sop_CN.md`，或重跑 `/pipeline-init 0` 后手动删除残留。
+2. **新增契约文件**：`/pipeline-init 0` 会把 `references/review-loop-contract.md` 复制到 `.pi/references/`；跳过已存在文件的策略下需手动复制或强制覆盖。
+3. **旧评审报告视为 legacy**：无 id / ledger 的历史报告不迁移，也不参与新的门计算；新一轮评审从 `DR-<new round>-1` / `CR-<new round>-1` 重新建账。门读取失败时按"契约非法"退回 1 次，第二次升级人工，不会静默放行。
+4. **开发仓库的漂移提示属预期**：在插件自身的开发仓库中，`references/pipeline-stage-prompt.yml`、`references/clarify_template.md`、`guide.md` 由人工维护（`.pi` 是开发资产而非部署副本），`checkTemplateDrift` 报出这些文件的漂移是预期行为，不要据此重跑 `/pipeline-init`。`references/review-loop-contract.md` 未纳入漂移检查清单（三线同源身份由 parity 测试保证）。
